@@ -15,6 +15,7 @@
 'use client';
 
 import { useState, useRef, useEffect } from 'react';
+import { ModelSelector } from '@/components/ModelSelector';
 
 // 消息类型
 interface Message {
@@ -62,7 +63,7 @@ export default function Home() {
   const [isLoading, setIsLoading] = useState(false);
   const [currentThinking, setCurrentThinking] = useState('');
   const [currentToolCall, setCurrentToolCall] = useState<ToolCallInfo | null>(null);
-  const [model, setModel] = useState<'openai' | 'claude'>('openai');
+  const [model, setModel] = useState('openai-gpt-4o');
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
@@ -253,28 +254,10 @@ export default function Home() {
           <label className="text-sm font-medium text-slate-600 dark:text-slate-300 mb-2 block">
             选择模型
           </label>
-          <div className="flex gap-2">
-            <button
-              onClick={() => setModel('openai')}
-              className={`flex-1 py-2 px-3 rounded-lg text-sm font-medium transition-all ${
-                model === 'openai'
-                  ? 'bg-blue-500 text-white shadow-md'
-                  : 'bg-slate-100 dark:bg-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-600'
-              }`}
-            >
-              GPT-4o
-            </button>
-            <button
-              onClick={() => setModel('claude')}
-              className={`flex-1 py-2 px-3 rounded-lg text-sm font-medium transition-all ${
-                model === 'claude'
-                  ? 'bg-purple-500 text-white shadow-md'
-                  : 'bg-slate-100 dark:bg-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-600'
-              }`}
-            >
-              Claude
-            </button>
-          </div>
+          <ModelSelector
+            selectedModel={model}
+            onModelChange={setModel}
+          />
         </div>
 
         {/* 工具列表 */}
@@ -320,11 +303,11 @@ export default function Home() {
         <header className="h-16 bg-white/80 dark:bg-slate-800/80 backdrop-blur-sm border-b border-slate-200 dark:border-slate-700 flex items-center px-6">
           <div className="flex items-center gap-3">
             <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center text-white text-sm">
-              {model === 'openai' ? 'G' : 'C'}
+              🤖
             </div>
             <div>
               <h2 className="font-semibold text-slate-800 dark:text-white">
-                {model === 'openai' ? 'GPT-4o' : 'Claude'} Agent
+                AI Agent
               </h2>
               <p className="text-xs text-slate-500 dark:text-slate-400">
                 基于 ReAct 模式 · 支持多工具调用

@@ -76,7 +76,7 @@ export interface AgentState {
 
 // Agent 配置
 export interface AgentConfig {
-  model: 'openai' | 'claude';
+  model: string;              // 模型 ID（如 'openai-gpt-4o', 'deepseek-chat' 等）
   maxIterations: number;      // 最大循环次数（防止死循环）
   temperature: number;        // 创造性参数 0-1
   tools: string[];            // 启用的工具列表
