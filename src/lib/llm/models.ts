@@ -111,15 +111,27 @@ export const MODEL_CONFIGS: ModelConfig[] = [
   // ---- DeepSeek 系列 ----
   // 文档: https://api-docs.deepseek.com/zh-cn/
   {
-    id: 'deepseek-chat',
-    name: 'DeepSeek V3',
+    id: 'deepseek-v4-flash',
+    name: 'DeepSeek V4 Flash',
     provider: 'DeepSeek',
     baseURL: 'https://api.deepseek.com',
-    model: 'deepseek-chat',
+    model: 'deepseek-v4-flash',
     envKey: 'DEEPSEEK_API_KEY',
     maxTokens: 8192,
     supportsTools: true,
-    description: 'DeepSeek V3 (671B MoE)，性价比极高',
+    description: 'DeepSeek V4 Flash，速度快成本低',
+    icon: '🔵',
+  },
+  {
+    id: 'deepseek-v4-pro',
+    name: 'DeepSeek V4 Pro',
+    provider: 'DeepSeek',
+    baseURL: 'https://api.deepseek.com',
+    model: 'deepseek-v4-pro',
+    envKey: 'DEEPSEEK_API_KEY',
+    maxTokens: 8192,
+    supportsTools: true,
+    description: 'DeepSeek V4 Pro，最强能力',
     icon: '🔵',
   },
   {
