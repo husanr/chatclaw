@@ -147,10 +147,10 @@ export class CustomLLMProvider implements LLMProvider {
   }
 
   // 流式对话（支持 DeepSeek 思考模式）
-  // 参考 DeepSeek 官方 demo 实现
+  // 使用 fetch 直接实现，参考 DeepSeek 官方 demo
   async *streamChat(messages: Message[]): AsyncIterable<{ type: 'reasoning' | 'content'; text: string }> {
-    // 构建请求参数
-    const requestParams: any = {
+    // 构建请求体
+    const body: any = {
       model: this.config.model,
       messages: messages.map(m => {
         const msg: any = {
@@ -169,30 +169,65 @@ export class CustomLLMProvider implements LLMProvider {
 
     // 如果支持思考模式，添加 thinking 参数
     if (this.config.supportsThinking) {
-      requestParams.reasoning_effort = 'high';
-      requestParams.extra_body = {
+      body.reasoning_effort = 'high';
+      body.extra_body = {
         thinking: { type: 'enabled' }
       };
     }
 
-    // 创建流式请求
-    const stream = await this.client.chat.completions.create(requestParams) as any;
+    // 使用 fetch 直接调用 API
+    const response = await fetch(`${this.config.baseURL}/chat/completions`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${this.config.apiKey}`,
+      },
+      body: JSON.stringify(body),
+    });
 
-    // 遍历每个 chunk
-    for await (const chunk of stream) {
-      const delta = chunk.choices[0]?.delta;
+    if (!response.ok) {
+      throw new Error(`API request failed: ${response.status} ${response.statusText}`);
+    }
 
-      if (!delta) continue;
+    const reader = response.body?.getReader();
+    if (!reader) {
+      throw new Error('No response body');
+    }
 
-      // DeepSeek 思考模式 - 思维链内容
-      // chunk.choices[0].delta.reasoning_content
-      if ((delta as any).reasoning_content) {
-        yield { type: 'reasoning', text: (delta as any).reasoning_content };
-      }
-      // 最终答案内容
-      // chunk.choices[0].delta.content
-      else if (delta.content) {
-        yield { type: 'content', text: delta.content };
+    const decoder = new TextDecoder();
+    let buffer = '';
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop() || '';
+
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed || !trimmed.startsWith('data: ')) continue;
+
+        const data = trimmed.slice(6);
+        if (data === '[DONE]') return;
+
+        try {
+          const json = JSON.parse(data);
+          const delta = json.choices?.[0]?.delta;
+          if (!delta) continue;
+
+          // DeepSeek 思考模式 - 思维链内容
+          if (delta.reasoning_content) {
+            yield { type: 'reasoning', text: delta.reasoning_content };
+          }
+          // 最终答案内容
+          else if (delta.content) {
+            yield { type: 'content', text: delta.content };
+          }
+        } catch (e) {
+          // 忽略解析错误
+        }
       }
     }
   }
