@@ -9,6 +9,8 @@
 // 3. 返回 reasoning_content（思维链）和 content（最终答案）
 // 4. 流式输出时，delta.reasoning_content 用于思维链
 //
+// 参考文档: https://api-docs.deepseek.com/zh-cn/guides/thinking_mode
+//
 // ============================================
 
 import OpenAI from 'openai';
@@ -101,8 +103,8 @@ export class CustomLLMProvider implements LLMProvider {
         }
 
         // 如果有 reasoning_content，添加到消息中（DeepSeek 思考模式需要）
-        if ((m as any).reasoningContent) {
-          msg.reasoning_content = (m as any).reasoningContent;
+        if (m.reasoningContent) {
+          msg.reasoning_content = m.reasoningContent;
         }
 
         return msg;
@@ -145,14 +147,22 @@ export class CustomLLMProvider implements LLMProvider {
   }
 
   // 流式对话（支持 DeepSeek 思考模式）
+  // 参考 DeepSeek 官方 demo 实现
   async *streamChat(messages: Message[]): AsyncIterable<{ type: 'reasoning' | 'content'; text: string }> {
     // 构建请求参数
     const requestParams: any = {
       model: this.config.model,
-      messages: messages.map(m => ({
-        role: m.role as 'system' | 'user' | 'assistant',
-        content: m.content || '',
-      })),
+      messages: messages.map(m => {
+        const msg: any = {
+          role: m.role as 'system' | 'user' | 'assistant',
+          content: m.content || '',
+        };
+        // 如果有 reasoning_content，添加到消息中
+        if (m.reasoningContent) {
+          msg.reasoning_content = m.reasoningContent;
+        }
+        return msg;
+      }),
       max_tokens: this.config.maxTokens || 4096,
       stream: true,
     };
@@ -165,18 +175,23 @@ export class CustomLLMProvider implements LLMProvider {
       };
     }
 
+    // 创建流式请求
     const stream = await this.client.chat.completions.create(requestParams) as any;
 
+    // 遍历每个 chunk
     for await (const chunk of stream) {
       const delta = chunk.choices[0]?.delta;
 
-      // 思维链内容（DeepSeek 思考模式）
-      if ((delta as any)?.reasoning_content) {
+      if (!delta) continue;
+
+      // DeepSeek 思考模式 - 思维链内容
+      // chunk.choices[0].delta.reasoning_content
+      if ((delta as any).reasoning_content) {
         yield { type: 'reasoning', text: (delta as any).reasoning_content };
       }
-
       // 最终答案内容
-      if (delta?.content) {
+      // chunk.choices[0].delta.content
+      else if (delta.content) {
         yield { type: 'content', text: delta.content };
       }
     }
