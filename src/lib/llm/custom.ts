@@ -1,15 +1,13 @@
 // ============================================
-// 通用 OpenAI 兼容 LLM 提供者
+// 通用 OpenAI 兼容 LLM 提供者（支持 DeepSeek 思考模式）
 // ============================================
 //
 // 🧠 原理讲解：
-// DeepSeek、Moonshot、Qwen、GLM 等国产大模型
-// 都兼容 OpenAI API 格式，只需要：
-// 1. 不同的 baseURL（API 地址）
-// 2. 不同的 API Key
-// 3. 不同的模型名称
-//
-// 这个通用提供者可以支持所有 OpenAI 兼容的 API
+// DeepSeek V4 支持思考模式（Thinking Mode）：
+// 1. 通过 extra_body 传入 thinking 参数启用
+// 2. reasoning_effort 控制思考强度（high/max）
+// 3. 返回 reasoning_content（思维链）和 content（最终答案）
+// 4. 流式输出时，delta.reasoning_content 用于思维链
 //
 // ============================================
 
@@ -25,6 +23,7 @@ export interface CustomModelConfig {
   apiKey: string;         // API Key
   maxTokens?: number;     // 最大 token 数
   supportsTools?: boolean; // 是否支持工具调用
+  supportsThinking?: boolean; // 是否支持思考模式
 }
 
 export class CustomLLMProvider implements LLMProvider {
@@ -53,11 +52,11 @@ export class CustomLLMProvider implements LLMProvider {
     return response.choices[0].message.content || '';
   }
 
-  // 带工具的对话
+  // 带工具的对话（支持 DeepSeek 思考模式）
   async chatWithTools(
     messages: Message[],
     tools: ToolDefinition[]
-  ): Promise<{ content: string | null; toolCalls: ToolCall[] }> {
+  ): Promise<{ content: string | null; toolCalls: ToolCall[]; reasoningContent?: string }> {
 
     // 如果模型不支持工具，降级为普通对话
     if (!this.config.supportsTools) {
@@ -75,7 +74,8 @@ export class CustomLLMProvider implements LLMProvider {
       },
     }));
 
-    const response = await this.client.chat.completions.create({
+    // 构建请求参数
+    const requestParams: any = {
       model: this.config.model,
       messages: messages.map(m => {
         const msg: any = {
@@ -100,12 +100,27 @@ export class CustomLLMProvider implements LLMProvider {
           msg.tool_call_id = m.toolCallId;
         }
 
+        // 如果有 reasoning_content，添加到消息中（DeepSeek 思考模式需要）
+        if ((m as any).reasoningContent) {
+          msg.reasoning_content = (m as any).reasoningContent;
+        }
+
         return msg;
       }),
       tools: openaiTools.length > 0 ? openaiTools : undefined,
       tool_choice: openaiTools.length > 0 ? 'auto' : undefined,
       max_tokens: this.config.maxTokens || 4096,
-    });
+    };
+
+    // 如果支持思考模式，添加 thinking 参数
+    if (this.config.supportsThinking) {
+      requestParams.reasoning_effort = 'high';
+      requestParams.extra_body = {
+        thinking: { type: 'enabled' }
+      };
+    }
+
+    const response = await this.client.chat.completions.create(requestParams);
 
     const choice = response.choices[0];
     const message = choice.message;
@@ -119,15 +134,20 @@ export class CustomLLMProvider implements LLMProvider {
         args: JSON.parse((tc as any).function.arguments),
       }));
 
+    // 获取 reasoning_content（DeepSeek 思考模式）
+    const reasoningContent = (message as any).reasoning_content || undefined;
+
     return {
       content: message.content,
       toolCalls,
+      reasoningContent,
     };
   }
 
-  // 流式对话
-  async *streamChat(messages: Message[]): AsyncIterable<string> {
-    const stream = await this.client.chat.completions.create({
+  // 流式对话（支持 DeepSeek 思考模式）
+  async *streamChat(messages: Message[]): AsyncIterable<{ type: 'reasoning' | 'content'; text: string }> {
+    // 构建请求参数
+    const requestParams: any = {
       model: this.config.model,
       messages: messages.map(m => ({
         role: m.role as 'system' | 'user' | 'assistant',
@@ -135,12 +155,29 @@ export class CustomLLMProvider implements LLMProvider {
       })),
       max_tokens: this.config.maxTokens || 4096,
       stream: true,
-    });
+    };
+
+    // 如果支持思考模式，添加 thinking 参数
+    if (this.config.supportsThinking) {
+      requestParams.reasoning_effort = 'high';
+      requestParams.extra_body = {
+        thinking: { type: 'enabled' }
+      };
+    }
+
+    const stream = await this.client.chat.completions.create(requestParams) as any;
 
     for await (const chunk of stream) {
-      const content = chunk.choices[0]?.delta?.content;
-      if (content) {
-        yield content;
+      const delta = chunk.choices[0]?.delta;
+
+      // 思维链内容（DeepSeek 思考模式）
+      if ((delta as any)?.reasoning_content) {
+        yield { type: 'reasoning', text: (delta as any).reasoning_content };
+      }
+
+      // 最终答案内容
+      if (delta?.content) {
+        yield { type: 'content', text: delta.content };
       }
     }
   }

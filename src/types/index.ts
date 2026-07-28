@@ -14,6 +14,7 @@ export interface Message {
   toolCalls?: ToolCall[];    // LLM 请求调用的工具
   toolCallId?: string;       // 工具执行结果的 ID
   name?: string;             // 工具名称
+  reasoningContent?: string; // 思维链内容（DeepSeek 思考模式）
 }
 
 // 工具调用 - LLM 生成的调用指令
@@ -60,10 +61,11 @@ export interface LLMProvider {
   chatWithTools(messages: Message[], tools: ToolDefinition[]): Promise<{
     content: string | null;
     toolCalls: ToolCall[];
+    reasoningContent?: string; // 思维链内容（DeepSeek 思考模式）
   }>;
 
   // 流式对话（实时输出）
-  streamChat(messages: Message[]): AsyncIterable<string>;
+  streamChat(messages: Message[]): AsyncIterable<string> | AsyncIterable<{ type: 'reasoning' | 'content'; text: string }>;
 }
 
 // Agent 状态

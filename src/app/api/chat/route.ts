@@ -1,5 +1,5 @@
 // ============================================
-// 聊天 API 路由
+// 聊天 API 路由（支持 DeepSeek 思考模式）
 // ============================================
 //
 // 🧠 原理讲解：
@@ -7,7 +7,7 @@
 // 前端发送用户消息，API 调用 Agent 处理，返回结果。
 //
 // 使用 Server-Sent Events (SSE) 实现流式输出，
-// 让用户能实时看到 Agent 的思考过程。
+// 让用户能实时看到 Agent 的思考过程和思维链。
 //
 // ============================================
 
@@ -66,6 +66,8 @@ export async function POST(request: NextRequest) {
             (result) => send({ type: 'tool_result', result }),
             // onToken（流式输出）
             (token) => send({ type: 'token', content: token }),
+            // onReasoning（DeepSeek 思考模式 - 思维链）
+            (reasoning) => send({ type: 'reasoning', content: reasoning }),
           );
 
           // 发送最终结果

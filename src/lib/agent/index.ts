@@ -60,6 +60,7 @@ function createLLMProvider(modelId: string): LLMProvider {
         apiKey,
         maxTokens: modelConfig.maxTokens,
         supportsTools: modelConfig.supportsTools,
+        supportsThinking: modelConfig.supportsThinking,
       });
   }
 }

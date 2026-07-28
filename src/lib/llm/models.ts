@@ -23,6 +23,7 @@ export interface ModelConfig {
   envKey: string;            // 环境变量名
   maxTokens?: number;        // 最大 token
   supportsTools: boolean;    // 是否支持工具
+  supportsThinking?: boolean; // 是否支持思考模式（DeepSeek）
   description?: string;      // 描述
   icon?: string;             // 图标
   isCustom?: boolean;        // 是否为自定义模型
@@ -119,7 +120,8 @@ export const MODEL_CONFIGS: ModelConfig[] = [
     envKey: 'DEEPSEEK_API_KEY',
     maxTokens: 8192,
     supportsTools: true,
-    description: 'DeepSeek V4 Flash，速度快成本低',
+    supportsThinking: true,
+    description: 'DeepSeek V4 Flash，速度快成本低，支持思考模式',
     icon: '🔵',
   },
   {
@@ -131,7 +133,8 @@ export const MODEL_CONFIGS: ModelConfig[] = [
     envKey: 'DEEPSEEK_API_KEY',
     maxTokens: 8192,
     supportsTools: true,
-    description: 'DeepSeek V4 Pro，最强能力',
+    supportsThinking: true,
+    description: 'DeepSeek V4 Pro，最强能力，支持思考模式',
     icon: '🔵',
   },
   {

@@ -62,6 +62,7 @@ export default function Home() {
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [currentThinking, setCurrentThinking] = useState('');
+  const [currentReasoning, setCurrentReasoning] = useState('');
   const [currentToolCall, setCurrentToolCall] = useState<ToolCallInfo | null>(null);
   const [model, setModel] = useState('openai-gpt-4o');
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -137,6 +138,11 @@ export default function Home() {
               switch (data.type) {
                 case 'thinking':
                   setCurrentThinking(data.content);
+                  break;
+
+                case 'reasoning':
+                  // DeepSeek 思考模式 - 思维链内容
+                  setCurrentReasoning(prev => prev + data.content);
                   break;
 
                 case 'tool_call':
@@ -430,13 +436,20 @@ export default function Home() {
           ))}
 
           {/* 当前思考状态 */}
-          {isLoading && (currentThinking || currentToolCall) && (
+          {isLoading && (currentThinking || currentReasoning || currentToolCall) && (
             <div className="flex justify-start">
               <div className="flex items-start gap-3">
                 <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center text-white text-sm">
                   🤖
                 </div>
-                <div className="bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-2xl px-4 py-3">
+                <div className="bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-2xl px-4 py-3 max-w-[80%]">
+                  {/* DeepSeek 思考模式 - 思维链 */}
+                  {currentReasoning && (
+                    <div className="text-xs text-purple-500 dark:text-purple-400 mb-2 p-2 bg-purple-50 dark:bg-purple-900/20 rounded-lg">
+                      <div className="font-medium mb-1">🧠 思考过程:</div>
+                      <div className="whitespace-pre-wrap">{currentReasoning}</div>
+                    </div>
+                  )}
                   {currentThinking && (
                     <div className="text-sm text-slate-500 dark:text-slate-400 italic mb-2">
                       🤔 {currentThinking}

@@ -1,5 +1,5 @@
 // ============================================
-// AI Agent 核心实现（ReAct 模式）
+// AI Agent 核心实现（ReAct 模式 + DeepSeek 思考模式）
 // ============================================
 //
 // 🧠 原理讲解：
@@ -14,10 +14,10 @@
 // 3. 重复直到任务完成或达到最大迭代次数
 // 4. 返回最终结果（流式输出）
 //
-// 关键设计：
-// - 最大迭代次数：防止 Agent 陷入死循环
-// - 错误处理：工具失败时的重试和降级
-// - 流式输出：实时展示思考过程
+// DeepSeek 思考模式：
+// - 思维链内容通过 reasoning_content 返回
+// - 流式输出时，delta.reasoning_content 用于思维链
+// - 工具调用时，reasoning_content 必须在后续请求中回传
 //
 // ============================================
 
@@ -72,13 +72,14 @@ export class Agent {
 现在，让我们开始帮助用户吧！`;
   }
 
-  // 主运行方法（支持流式输出）
+  // 主运行方法（支持流式输出 + DeepSeek 思考模式）
   async run(
     userMessage: string,
     onThinking?: (thought: string) => void,
     onToolCall?: (toolCall: ToolCall) => void,
     onToolResult?: (result: any) => void,
     onToken?: (token: string) => void,
+    onReasoning?: (reasoning: string) => void,
   ): Promise<string> {
     // 添加用户消息
     this.messages.push({ role: 'user', content: userMessage });
@@ -91,20 +92,26 @@ export class Agent {
       console.log(`\n🔄 Agent 循环 #${iteration + 1}`);
 
       // 1. 思考：让 LLM 决定下一步
-      const response = await this.llm.chatWithTools(this.messages, enabledTools);
+      const response = await (this.llm as any).chatWithTools(this.messages, enabledTools);
 
-      // 2. 如果有文本内容，通知观察者
+      // 2. 如果有思维链内容，通知观察者（DeepSeek 思考模式）
+      if (response.reasoningContent) {
+        onReasoning?.(response.reasoningContent);
+      }
+
+      // 3. 如果有文本内容，通知观察者
       if (response.content) {
         onThinking?.(response.content);
       }
 
-      // 3. 如果没有工具调用，说明任务完成 - 使用流式输出
+      // 4. 如果没有工具调用，说明任务完成 - 使用流式输出
       if (response.toolCalls.length === 0) {
         // 如果已经有内容（非流式返回的），直接使用
         if (response.content) {
           this.messages.push({
             role: 'assistant',
             content: response.content,
+            reasoningContent: response.reasoningContent,
           });
           console.log('✅ Agent 任务完成');
           return response.content;
@@ -113,32 +120,49 @@ export class Agent {
         // 否则使用流式输出获取最终答案
         console.log('✅ Agent 任务完成（流式输出）');
         let fullContent = '';
+        let fullReasoning = '';
 
         // 使用流式对话获取最终答案
         const messagesForStream = [...this.messages];
-        for await (const token of this.llm.streamChat(messagesForStream)) {
-          fullContent += token;
-          onToken?.(token);
+        const stream = this.llm.streamChat(messagesForStream);
+
+        for await (const chunk of stream) {
+          // 处理对象格式（支持思考模式）
+          if (typeof chunk === 'object' && chunk !== null) {
+            if (chunk.type === 'reasoning') {
+              fullReasoning += chunk.text;
+              onReasoning?.(chunk.text);
+            } else if (chunk.type === 'content') {
+              fullContent += chunk.text;
+              onToken?.(chunk.text);
+            }
+          } else {
+            // 处理字符串格式（兼容旧版本）
+            fullContent += chunk as string;
+            onToken?.(chunk as string);
+          }
         }
 
         // 添加助手消息
         this.messages.push({
           role: 'assistant',
           content: fullContent,
+          reasoningContent: fullReasoning || undefined,
         });
 
         return fullContent;
       }
 
-      // 4. 有工具调用，需要执行
-      // 先添加助手消息（包含工具调用）
+      // 5. 有工具调用，需要执行
+      // 先添加助手消息（包含工具调用和 reasoning_content）
       this.messages.push({
         role: 'assistant',
         content: response.content || null,
         toolCalls: response.toolCalls,
+        reasoningContent: response.reasoningContent,
       });
 
-      // 5. 逐个执行工具
+      // 6. 逐个执行工具
       for (const toolCall of response.toolCalls) {
         console.log(`🔧 调用工具: ${toolCall.name}`);
         onToolCall?.(toolCall);
