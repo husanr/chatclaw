@@ -12,7 +12,7 @@
 //    - Acting（行动）: 调用工具执行操作
 //    - Observing（观察）: 获取工具执行结果
 // 3. 重复直到任务完成或达到最大迭代次数
-// 4. 返回最终结果
+// 4. 返回最终结果（流式输出）
 //
 // 关键设计：
 // - 最大迭代次数：防止 Agent 陷入死循环
@@ -72,7 +72,7 @@ export class Agent {
 现在，让我们开始帮助用户吧！`;
   }
 
-  // 主运行方法
+  // 主运行方法（支持流式输出）
   async run(
     userMessage: string,
     onThinking?: (thought: string) => void,
@@ -98,16 +98,36 @@ export class Agent {
         onThinking?.(response.content);
       }
 
-      // 3. 如果没有工具调用，说明任务完成
+      // 3. 如果没有工具调用，说明任务完成 - 使用流式输出
       if (response.toolCalls.length === 0) {
+        // 如果已经有内容（非流式返回的），直接使用
+        if (response.content) {
+          this.messages.push({
+            role: 'assistant',
+            content: response.content,
+          });
+          console.log('✅ Agent 任务完成');
+          return response.content;
+        }
+
+        // 否则使用流式输出获取最终答案
+        console.log('✅ Agent 任务完成（流式输出）');
+        let fullContent = '';
+
+        // 使用流式对话获取最终答案
+        const messagesForStream = [...this.messages];
+        for await (const token of this.llm.streamChat(messagesForStream)) {
+          fullContent += token;
+          onToken?.(token);
+        }
+
         // 添加助手消息
         this.messages.push({
           role: 'assistant',
-          content: response.content || '',
+          content: fullContent,
         });
 
-        console.log('✅ Agent 任务完成');
-        return response.content || '任务已完成';
+        return fullContent;
       }
 
       // 4. 有工具调用，需要执行
