@@ -236,4 +236,151 @@ export class CustomLLMProvider implements LLMProvider {
   getConfig(): CustomModelConfig {
     return this.config;
   }
+
+  // 带工具的流式对话（核心：边收 token 边解析 tool_calls）
+  async *chatWithToolsStream(
+    messages: Message[],
+    tools: ToolDefinition[],
+  ): AsyncIterable<import('@/types').ChatStreamEvent> {
+    // 如果模型不支持工具，降级为普通流式
+    if (!this.config.supportsTools) {
+      let content = '';
+      for await (const chunk of this.streamChat(messages)) {
+        const text = typeof chunk === 'object' ? chunk.text : chunk;
+        content += text;
+        yield { type: 'token', text };
+      }
+      yield { type: 'done', content, toolCalls: [] };
+      return;
+    }
+
+    const openaiTools = tools.map(tool => ({
+      type: 'function' as const,
+      function: {
+        name: tool.name,
+        description: tool.description,
+        parameters: tool.parameters,
+      },
+    }));
+
+    // 构建请求消息（和 chatWithTools 一样处理 tool call / tool result / reasoning）
+    const requestMessages = messages.map(m => {
+      const msg: any = { role: m.role, content: m.content };
+      if (m.toolCalls && m.toolCalls.length > 0) {
+        msg.tool_calls = m.toolCalls.map(tc => ({
+          id: tc.id,
+          type: 'function',
+          function: { name: tc.name, arguments: JSON.stringify(tc.args) },
+        }));
+      }
+      if (m.toolCallId) msg.tool_call_id = m.toolCallId;
+      if (m.reasoningContent) msg.reasoning_content = m.reasoningContent;
+      return msg;
+    });
+
+    const body: any = {
+      model: this.config.model,
+      messages: requestMessages,
+      tools: openaiTools,
+      tool_choice: 'auto',
+      max_tokens: this.config.maxTokens || 4096,
+      stream: true,
+    };
+
+    if (this.config.supportsThinking) {
+      body.reasoning_effort = 'high';
+      body.extra_body = { thinking: { type: 'enabled' } };
+    }
+
+    const response = await fetch(`${this.config.baseURL}/chat/completions`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${this.config.apiKey}`,
+      },
+      body: JSON.stringify(body),
+    });
+
+    if (!response.ok) {
+      const errText = await response.text().catch(() => '');
+      throw new Error(`API request failed: ${response.status} ${response.statusText} ${errText}`);
+    }
+
+    const reader = response.body?.getReader();
+    if (!reader) throw new Error('No response body');
+
+    const decoder = new TextDecoder();
+    let buffer = '';
+
+    // 累积变量
+    let fullContent = '';
+    let fullReasoning = '';
+    // tool call 累积：按 index 存储
+    const toolCallChunks: Record<number, { id: string; name: string; arguments: string }> = {};
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop() || '';
+
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed || !trimmed.startsWith('data: ')) continue;
+        const data = trimmed.slice(6);
+        if (data === '[DONE]') break;
+
+        try {
+          const json = JSON.parse(data);
+          const delta = json.choices?.[0]?.delta;
+          if (!delta) continue;
+
+          // reasoning（DeepSeek 思考模式）
+          if (delta.reasoning_content) {
+            fullReasoning += delta.reasoning_content;
+            yield { type: 'reasoning', text: delta.reasoning_content };
+          }
+
+          // 普通文本 token
+          if (delta.content) {
+            fullContent += delta.content;
+            yield { type: 'token', text: delta.content };
+          }
+
+          // tool_calls 流式累积
+          if (delta.tool_calls) {
+            for (const tc of delta.tool_calls) {
+              const idx = tc.index ?? 0;
+              if (!toolCallChunks[idx]) {
+                toolCallChunks[idx] = { id: '', name: '', arguments: '' };
+              }
+              if (tc.id) toolCallChunks[idx].id = tc.id;
+              if (tc.function?.name) toolCallChunks[idx].name = tc.function.name;
+              if (tc.function?.arguments) toolCallChunks[idx].arguments += tc.function.arguments;
+            }
+          }
+        } catch {
+          // 忽略 JSON 解析错误（可能是不完整的 chunk）
+        }
+      }
+    }
+
+    // 流结束：解析累积的 tool calls
+    const toolCalls: import('@/types').ToolCall[] = Object.values(toolCallChunks)
+      .filter(tc => tc.name && tc.id)
+      .map(tc => ({
+        id: tc.id,
+        name: tc.name,
+        args: (() => { try { return JSON.parse(tc.arguments); } catch { return {}; } })(),
+      }));
+
+    yield {
+      type: 'done',
+      content: fullContent || null,
+      toolCalls,
+      reasoningContent: fullReasoning || undefined,
+    };
+  }
 }

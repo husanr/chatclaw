@@ -52,17 +52,26 @@ export interface Tool {
   execute: (args: Record<string, any>) => Promise<ToolResult>; // 执行函数
 }
 
+// 流式工具调用事件
+export type ChatStreamEvent =
+  | { type: 'token'; text: string }
+  | { type: 'reasoning'; text: string }
+  | { type: 'done'; content: string | null; toolCalls: ToolCall[]; reasoningContent?: string };
+
 // LLM 提供者接口
 export interface LLMProvider {
   // 普通对话
   chat(messages: Message[]): Promise<string>;
 
-  // 带工具的对话（Agent 核心）
+  // 带工具的对话（非流式，保留兼容）
   chatWithTools(messages: Message[], tools: ToolDefinition[]): Promise<{
     content: string | null;
     toolCalls: ToolCall[];
-    reasoningContent?: string; // 思维链内容（DeepSeek 思考模式）
+    reasoningContent?: string;
   }>;
+
+  // 带工具的流式对话（推荐）
+  chatWithToolsStream?(messages: Message[], tools: ToolDefinition[]): AsyncIterable<ChatStreamEvent>;
 
   // 流式对话（实时输出）
   streamChat(messages: Message[]): AsyncIterable<string> | AsyncIterable<{ type: 'reasoning' | 'content'; text: string }>;

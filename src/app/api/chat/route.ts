@@ -14,11 +14,17 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createAgent, defaultConfig } from '@/lib/agent';
 import { AgentConfig } from '@/types';
+import { setAllowedDir } from '@/lib/tools';
 
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
-    const { message, config } = body;
+    const { message, config, history } = body;
+
+    // 设置工作目录
+    if (config?.allowedDir) {
+      setAllowedDir(config.allowedDir);
+    }
 
     if (!message) {
       return NextResponse.json(
@@ -33,8 +39,8 @@ export async function POST(request: NextRequest) {
       ...config,
     };
 
-    // 创建 Agent
-    const agent = createAgent(agentConfig);
+    // 创建 Agent（传入历史消息实现多轮对话）
+    const agent = createAgent(agentConfig, history);
 
     // 使用流式响应
     const encoder = new TextEncoder();

@@ -22,25 +22,28 @@ import { OpenAIProvider } from '../llm/openai';
 import { ClaudeProvider } from '../llm/claude';
 import { CustomLLMProvider } from '../llm/custom';
 import { getModelById, type ModelConfig } from '../llm/models';
-import { AgentConfig, LLMProvider } from '@/types';
+import { AgentConfig, LLMProvider, Message } from '@/types';
 import { registerAllTools } from '../tools';
 
 // 注册所有工具
 registerAllTools();
 
-// 创建 LLM 提供者
-function createLLMProvider(modelId: string): LLMProvider {
+// 创建 LLM 提供者（apiKey/baseURL 从请求体传入，不再读环境变量）
+function createLLMProvider(modelId: string, apiOverrides?: { baseURL?: string; apiKey?: string }): LLMProvider {
   const modelConfig = getModelById(modelId);
 
   if (!modelConfig) {
     throw new Error(`未找到模型配置: ${modelId}`);
   }
 
-  // 获取 API Key
-  const apiKey = process.env[modelConfig.envKey];
+  // API Key：优先用前端传入的，否则报错
+  const apiKey = apiOverrides?.apiKey;
   if (!apiKey) {
-    throw new Error(`请配置 ${modelConfig.envKey} 环境变量`);
+    throw new Error('请在界面上填写 API Key');
   }
+
+  // baseURL：优先用前端传入的，否则用模型配置里的
+  const baseURL = apiOverrides?.baseURL || modelConfig.baseURL;
 
   // 根据提供者类型创建不同的 Provider
   switch (modelConfig.provider) {
@@ -51,11 +54,10 @@ function createLLMProvider(modelId: string): LLMProvider {
       return new ClaudeProvider(apiKey, modelConfig.model);
 
     default:
-      // 其他所有模型使用通用 OpenAI 兼容提供者
       return new CustomLLMProvider({
         name: modelConfig.name,
         provider: modelConfig.provider,
-        baseURL: modelConfig.baseURL,
+        baseURL,
         model: modelConfig.model,
         apiKey,
         maxTokens: modelConfig.maxTokens,
@@ -66,9 +68,12 @@ function createLLMProvider(modelId: string): LLMProvider {
 }
 
 // 创建 Agent 实例
-export function createAgent(config: AgentConfig): Agent {
-  const llm = createLLMProvider(config.model);
-  return new Agent(llm, config);
+export function createAgent(config: AgentConfig, history?: Message[]): Agent {
+  const llm = createLLMProvider(config.model, {
+    baseURL: (config as any).baseURL,
+    apiKey: (config as any).apiKey,
+  });
+  return new Agent(llm, config, history);
 }
 
 // 默认配置
@@ -81,10 +86,7 @@ export const defaultConfig: AgentConfig = {
     'calculator',
     'code_executor',
     'file_operations',
-    'database_query',
     'api_caller',
-    'email_sender',
-    'image_generator',
   ],
 };
 

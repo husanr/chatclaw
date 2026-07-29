@@ -120,4 +120,71 @@ export class OpenAIProvider implements LLMProvider {
       }
     }
   }
+
+  // 带工具的流式对话
+  async *chatWithToolsStream(
+    messages: Message[],
+    tools: ToolDefinition[],
+  ): AsyncIterable<import('@/types').ChatStreamEvent> {
+    const openaiTools = tools.map(tool => ({
+      type: 'function' as const,
+      function: {
+        name: tool.name,
+        description: tool.description,
+        parameters: tool.parameters,
+      },
+    }));
+
+    const stream = await this.client.chat.completions.create({
+      model: this.model,
+      messages: messages.map(m => {
+        const msg: any = { role: m.role, content: m.content };
+        if (m.toolCalls && m.toolCalls.length > 0) {
+          msg.tool_calls = m.toolCalls.map(tc => ({
+            id: tc.id,
+            type: 'function',
+            function: { name: tc.name, arguments: JSON.stringify(tc.args) },
+          }));
+        }
+        if (m.toolCallId) msg.tool_call_id = m.toolCallId;
+        return msg;
+      }),
+      tools: openaiTools.length > 0 ? openaiTools : undefined,
+      tool_choice: openaiTools.length > 0 ? 'auto' : undefined,
+      stream: true,
+    });
+
+    let fullContent = '';
+    const toolCallChunks: Record<number, { id: string; name: string; arguments: string }> = {};
+
+    for await (const chunk of stream) {
+      const delta = chunk.choices[0]?.delta;
+      if (!delta) continue;
+
+      if (delta.content) {
+        fullContent += delta.content;
+        yield { type: 'token', text: delta.content };
+      }
+
+      if (delta.tool_calls) {
+        for (const tc of delta.tool_calls) {
+          const idx = tc.index ?? 0;
+          if (!toolCallChunks[idx]) toolCallChunks[idx] = { id: '', name: '', arguments: '' };
+          if (tc.id) toolCallChunks[idx].id = tc.id;
+          if (tc.function?.name) toolCallChunks[idx].name = tc.function.name;
+          if (tc.function?.arguments) toolCallChunks[idx].arguments += tc.function.arguments;
+        }
+      }
+    }
+
+    const toolCalls: import('@/types').ToolCall[] = Object.values(toolCallChunks)
+      .filter(tc => tc.name && tc.id)
+      .map(tc => ({
+        id: tc.id,
+        name: tc.name,
+        args: (() => { try { return JSON.parse(tc.arguments); } catch { return {}; } })(),
+      }));
+
+    yield { type: 'done', content: fullContent || null, toolCalls };
+  }
 }

@@ -29,7 +29,7 @@ export class Agent {
   private config: AgentConfig;
   private messages: Message[] = [];
 
-  constructor(llm: LLMProvider, config: AgentConfig) {
+  constructor(llm: LLMProvider, config: AgentConfig, history?: Message[]) {
     this.llm = llm;
     this.config = config;
 
@@ -38,6 +38,15 @@ export class Agent {
       role: 'system',
       content: this.getSystemPrompt(),
     });
+
+    // 如果传入了历史消息，加载到 messages 里（跳过 system）
+    if (history && history.length > 0) {
+      for (const msg of history) {
+        if (msg.role !== 'system') {
+          this.messages.push(msg);
+        }
+      }
+    }
   }
 
   // 系统提示词 - 定义 Agent 的行为
@@ -50,10 +59,7 @@ export class Agent {
 - calculator: 执行数学计算
 - code_executor: 执行 JavaScript 代码
 - file_operations: 文件读写操作
-- database_query: 数据库查询
 - api_caller: 调用外部 API
-- email_sender: 发送邮件
-- image_generator: 根据描述生成图片
 
 ## 工作流程（ReAct 模式）
 1. 仔细分析用户的请求（Reasoning - 思考）
@@ -72,7 +78,7 @@ export class Agent {
 现在，让我们开始帮助用户吧！`;
   }
 
-  // 主运行方法（支持流式输出 + DeepSeek 思考模式）
+  // 主运行方法（全流式：思考 + 工具调用 + 最终回答 全部实时推送）
   async run(
     userMessage: string,
     onThinking?: (thought: string) => void,
@@ -91,97 +97,69 @@ export class Agent {
     for (let iteration = 0; iteration < this.config.maxIterations; iteration++) {
       console.log(`\n🔄 Agent 循环 #${iteration + 1}`);
 
-      // 1. 思考：让 LLM 决定下一步
-      const response = await (this.llm as any).chatWithTools(this.messages, enabledTools);
+      // 每一轮都用流式：边收 token 边推送前端
+      let content: string | null = null;
+      let toolCalls: ToolCall[] = [];
+      let reasoningContent: string | undefined;
 
-      // 2. 如果有思维链内容，通知观察者（DeepSeek 思考模式）
-      if (response.reasoningContent) {
-        onReasoning?.(response.reasoningContent);
-      }
-
-      // 3. 如果有文本内容，通知观察者
-      if (response.content) {
-        onThinking?.(response.content);
-      }
-
-      // 4. 如果没有工具调用，说明任务完成 - 使用流式输出
-      if (response.toolCalls.length === 0) {
-        // 如果已经有内容（非流式返回的），直接使用
-        if (response.content) {
-          this.messages.push({
-            role: 'assistant',
-            content: response.content,
-            reasoningContent: response.reasoningContent,
-          });
-          console.log('✅ Agent 任务完成');
-          return response.content;
-        }
-
-        // 否则使用流式输出获取最终答案
-        console.log('✅ Agent 任务完成（流式输出）');
-        let fullContent = '';
-        let fullReasoning = '';
-
-        // 使用流式对话获取最终答案
-        const messagesForStream = [...this.messages];
-        const stream = this.llm.streamChat(messagesForStream);
-
-        for await (const chunk of stream) {
-          // 处理对象格式（支持思考模式）
-          if (typeof chunk === 'object' && chunk !== null) {
-            if (chunk.type === 'reasoning') {
-              fullReasoning += chunk.text;
-              onReasoning?.(chunk.text);
-            } else if (chunk.type === 'content') {
-              fullContent += chunk.text;
-              onToken?.(chunk.text);
-            }
-          } else {
-            // 处理字符串格式（兼容旧版本）
-            fullContent += chunk as string;
-            onToken?.(chunk as string);
+      if (this.llm.chatWithToolsStream) {
+        // 流式路径：实时推送 token/reasoning
+        for await (const event of this.llm.chatWithToolsStream(this.messages, enabledTools)) {
+          if (event.type === 'token') {
+            onToken?.(event.text);
+          } else if (event.type === 'reasoning') {
+            onReasoning?.(event.text);
+          } else if (event.type === 'done') {
+            content = event.content;
+            toolCalls = event.toolCalls;
+            reasoningContent = event.reasoningContent;
           }
         }
-
-        // 添加助手消息
-        this.messages.push({
-          role: 'assistant',
-          content: fullContent,
-          reasoningContent: fullReasoning || undefined,
-        });
-
-        return fullContent;
+      } else {
+        // 降级：非流式路径
+        const response = await (this.llm as any).chatWithTools(this.messages, enabledTools);
+        content = response.content;
+        toolCalls = response.toolCalls;
+        reasoningContent = response.reasoningContent;
+        if (reasoningContent) onReasoning?.(reasoningContent);
+        if (content) onThinking?.(content);
       }
 
-      // 5. 有工具调用，需要执行
-      // 先添加助手消息（包含工具调用和 reasoning_content）
+      // 没有工具调用 → 任务完成
+      if (toolCalls.length === 0) {
+        this.messages.push({
+          role: 'assistant',
+          content,
+          reasoningContent,
+        });
+        console.log('✅ Agent 任务完成');
+        return content || '';
+      }
+
+      // 有工具调用 → 执行
       this.messages.push({
         role: 'assistant',
-        content: response.content || null,
-        toolCalls: response.toolCalls,
-        reasoningContent: response.reasoningContent,
+        content,
+        toolCalls,
+        reasoningContent,
       });
 
-      // 6. 逐个执行工具
-      for (const toolCall of response.toolCalls) {
-        console.log(`🔧 调用工具: ${toolCall.name}`);
-        onToolCall?.(toolCall);
+      for (const tc of toolCalls) {
+        console.log(`🔧 调用工具: ${tc.name}`);
+        onToolCall?.(tc);
 
-        // 执行工具
-        const result = await toolRegistry.execute(toolCall.name, toolCall.args);
+        const result = await toolRegistry.execute(tc.name, tc.args);
         onToolResult?.(result);
 
-        // 添加工具结果到消息
         this.messages.push({
           role: 'tool',
-          toolCallId: toolCall.id,
-          name: toolCall.name,
+          toolCallId: tc.id,
+          name: tc.name,
           content: JSON.stringify(result),
         });
       }
     }
 
-    // 达到最大迭代次数
     console.log('⚠️ 达到最大迭代次数');
     return '抱歉，任务未能在规定步骤内完成。请尝试简化您的请求。';
   }

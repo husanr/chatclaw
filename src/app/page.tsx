@@ -22,6 +22,7 @@ interface Message {
   id: string;
   role: 'user' | 'assistant' | 'system';
   content: string;
+  reasoning?: string;
   toolCalls?: ToolCallInfo[];
   timestamp: Date;
 }
@@ -33,16 +34,21 @@ interface ToolCallInfo {
   result?: any;
 }
 
+// 对话会话类型
+interface Conversation {
+  id: string;
+  title: string;
+  messages: Message[];
+  createdAt: number;
+}
+
 // 工具名称映射（中文）
 const toolNameMap: Record<string, string> = {
   web_search: '网页搜索',
   calculator: '计算器',
   code_executor: '代码执行',
   file_operations: '文件操作',
-  database_query: '数据库查询',
   api_caller: 'API 调用',
-  email_sender: '邮件发送',
-  image_generator: '图片生成',
 };
 
 // 工具图标
@@ -51,13 +57,12 @@ const toolIconMap: Record<string, string> = {
   calculator: '🔢',
   code_executor: '💻',
   file_operations: '📁',
-  database_query: '🗄️',
   api_caller: '🌐',
-  email_sender: '📧',
-  image_generator: '🎨',
 };
 
 export default function Home() {
+  const [conversations, setConversations] = useState<Conversation[]>([]);
+  const [currentConvId, setCurrentConvId] = useState<string>('');
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
@@ -65,13 +70,118 @@ export default function Home() {
   const [currentReasoning, setCurrentReasoning] = useState('');
   const [currentToolCall, setCurrentToolCall] = useState<ToolCallInfo | null>(null);
   const [model, setModel] = useState('openai-gpt-4o');
+  const [apiConfig, setApiConfig] = useState({ baseURL: '', apiKey: '' });
+  const [workspaceDir, setWorkspaceDir] = useState(() => {
+    if (typeof window === 'undefined') return '/tmp';
+    return localStorage.getItem('ai-agent-workspace') || '/tmp';
+  });
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const hasRestoredRef = useRef(false);
+
+  // 挂载后从 localStorage 恢复所有会话
+  useEffect(() => {
+    if (hasRestoredRef.current) return;
+    hasRestoredRef.current = true;
+    try {
+      const stored = localStorage.getItem('ai-agent-conversations');
+      if (stored) {
+        const parsed: Conversation[] = JSON.parse(stored);
+        // 恢复 Date 对象
+        const restored = parsed.map(c => ({
+          ...c,
+          messages: c.messages.map(m => ({
+            ...m,
+            timestamp: m.timestamp ? new Date(m.timestamp) : new Date(),
+          })),
+        }));
+        setConversations(restored);
+        if (restored.length > 0) {
+          setCurrentConvId(restored[0].id);
+          setMessages(restored[0].messages);
+        }
+      }
+    } catch {}
+  }, []);
+
+  // 保存所有会话到 localStorage
+  useEffect(() => {
+    if (conversations.length === 0) return;
+    try {
+      localStorage.setItem('ai-agent-conversations', JSON.stringify(conversations));
+    } catch {}
+  }, [conversations]);
+
+  // 切换会话时同步 messages
+  useEffect(() => {
+    const conv = conversations.find(c => c.id === currentConvId);
+    if (conv) setMessages(conv.messages);
+  }, [currentConvId]);
+
+  // 新建会话
+  const newConversation = () => {
+    const id = generateId();
+    const conv: Conversation = { id, title: '新对话', messages: [], createdAt: Date.now() };
+    setConversations(prev => [conv, ...prev]);
+    setCurrentConvId(id);
+    setMessages([]);
+    setCurrentThinking('');
+    setCurrentReasoning('');
+    setCurrentToolCall(null);
+  };
+
+  // 切换会话
+  const switchConversation = (id: string) => {
+    if (id === currentConvId) return;
+    setCurrentConvId(id);
+    setCurrentThinking('');
+    setCurrentReasoning('');
+    setCurrentToolCall(null);
+  };
+
+  // 删除会话
+  const deleteConversation = (id: string) => {
+    setConversations(prev => {
+      const next = prev.filter(c => c.id !== id);
+      if (id === currentConvId && next.length > 0) {
+        setCurrentConvId(next[0].id);
+      } else if (next.length === 0) {
+        const newId = generateId();
+        const newConv: Conversation = { id: newId, title: '新对话', messages: [], createdAt: Date.now() };
+        setCurrentConvId(newId);
+        setMessages([]);
+        return [newConv];
+      }
+      return next;
+    });
+  };
+
+  // 更新当前会话的消息
+  const updateCurrentMessages = (updater: (prev: Message[]) => Message[]) => {
+    setMessages(prev => {
+      const next = updater(prev);
+      setConversations(convs => convs.map(c => {
+        if (c.id !== currentConvId) return c;
+        // 自动标题：取第一条用户消息的前 20 个字
+        const firstUser = next.find(m => m.role === 'user');
+        const title = firstUser?.content?.substring(0, 20) || '新对话';
+        return { ...c, messages: next, title };
+      }));
+      return next;
+    });
+  };
 
   // 自动滚动到底部
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages, currentThinking, currentToolCall]);
+
+  // 持久化对话到 localStorage
+  useEffect(() => {
+    try {
+      localStorage.setItem('ai-agent-messages', JSON.stringify(messages));
+    } catch {}
+  }, [messages]);
 
   // 生成唯一 ID
   const generateId = () => Math.random().toString(36).substring(2, 15);
@@ -80,6 +190,12 @@ export default function Home() {
   const sendMessage = async () => {
     if (!input.trim() || isLoading) return;
 
+    // 确保有当前会话
+    if (!currentConvId) {
+      newConversation();
+      return;
+    }
+
     const userMessage: Message = {
       id: generateId(),
       role: 'user',
@@ -87,13 +203,13 @@ export default function Home() {
       timestamp: new Date(),
     };
 
-    setMessages(prev => [...prev, userMessage]);
+    updateCurrentMessages(prev => [...prev, userMessage]);
     setInput('');
     setIsLoading(true);
     setCurrentThinking('');
+    setCurrentReasoning('');
     setCurrentToolCall(null);
 
-    // 创建助手消息占位
     const assistantMessageId = generateId();
     const assistantMessage: Message = {
       id: assistantMessageId,
@@ -102,16 +218,28 @@ export default function Home() {
       toolCalls: [],
       timestamp: new Date(),
     };
-    setMessages(prev => [...prev, assistantMessage]);
+
+    const currentHistory = [...messages];
+
+    updateCurrentMessages(prev => [...prev, assistantMessage]);
 
     try {
-      // 调用 API
+      // 调用 API，带上完整对话历史
       const response = await fetch('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           message: userMessage.content,
-          config: { model },
+          config: {
+            model,
+            baseURL: apiConfig.baseURL,
+            apiKey: apiConfig.apiKey,
+            allowedDir: workspaceDir,
+          },
+          history: currentHistory.map(m => ({
+            role: m.role,
+            content: m.content,
+          })),
         }),
       });
 
@@ -141,8 +269,13 @@ export default function Home() {
                   break;
 
                 case 'reasoning':
-                  // DeepSeek 思考模式 - 思维链内容
+                  // DeepSeek 思考模式 - 存到消息里 + 累积到实时显示
                   setCurrentReasoning(prev => prev + data.content);
+                  updateCurrentMessages(prev => prev.map(m =>
+                    m.id === assistantMessageId
+                      ? { ...m, reasoning: (m.reasoning || '') + data.content }
+                      : m
+                  ));
                   break;
 
                 case 'tool_call':
@@ -154,7 +287,7 @@ export default function Home() {
                   setCurrentToolCall(toolCall);
 
                   // 添加到消息的工具调用列表
-                  setMessages(prev => prev.map(m =>
+                  updateCurrentMessages(prev => prev.map(m =>
                     m.id === assistantMessageId
                       ? { ...m, toolCalls: [...(m.toolCalls || []), toolCall] }
                       : m
@@ -165,7 +298,7 @@ export default function Home() {
                   setCurrentToolCall(null);
 
                   // 更新最后一个工具调用的结果
-                  setMessages(prev => prev.map(m => {
+                  updateCurrentMessages(prev => prev.map(m => {
                     if (m.id === assistantMessageId && m.toolCalls) {
                       const updatedToolCalls = [...m.toolCalls];
                       const lastCall = updatedToolCalls[updatedToolCalls.length - 1];
@@ -179,7 +312,7 @@ export default function Home() {
                   break;
 
                 case 'token':
-                  setMessages(prev => prev.map(m =>
+                  updateCurrentMessages(prev => prev.map(m =>
                     m.id === assistantMessageId
                       ? { ...m, content: m.content + data.content }
                       : m
@@ -187,7 +320,7 @@ export default function Home() {
                   break;
 
                 case 'done':
-                  setMessages(prev => prev.map(m =>
+                  updateCurrentMessages(prev => prev.map(m =>
                     m.id === assistantMessageId
                       ? { ...m, content: data.content }
                       : m
@@ -197,7 +330,7 @@ export default function Home() {
                   break;
 
                 case 'error':
-                  setMessages(prev => prev.map(m =>
+                  updateCurrentMessages(prev => prev.map(m =>
                     m.id === assistantMessageId
                       ? { ...m, content: `❌ 错误: ${data.content}` }
                       : m
@@ -211,7 +344,7 @@ export default function Home() {
         }
       }
     } catch (error) {
-      setMessages(prev => prev.map(m =>
+      updateCurrentMessages(prev => prev.map(m =>
         m.id === assistantMessageId
           ? { ...m, content: `❌ 请求失败: ${error}` }
           : m
@@ -231,11 +364,9 @@ export default function Home() {
     }
   };
 
-  // 清空对话
+  // 清空对话 = 新建会话
   const clearChat = () => {
-    setMessages([]);
-    setCurrentThinking('');
-    setCurrentToolCall(null);
+    newConversation();
   };
 
   return (
@@ -263,43 +394,72 @@ export default function Home() {
           <ModelSelector
             selectedModel={model}
             onModelChange={setModel}
+            onApiConfigChange={setApiConfig}
           />
         </div>
 
-        {/* 工具列表 */}
-        <div className="flex-1 p-4 overflow-y-auto">
-          <h3 className="text-sm font-medium text-slate-600 dark:text-slate-300 mb-3">
-            🛠️ 可用工具
-          </h3>
-          <div className="space-y-2">
-            {Object.entries(toolNameMap).map(([key, name]) => (
-              <div
-                key={key}
-                className="flex items-center gap-3 p-2 rounded-lg bg-slate-50 dark:bg-slate-700/50"
-              >
-                <span className="text-lg">{toolIconMap[key]}</span>
-                <div>
-                  <div className="text-sm font-medium text-slate-700 dark:text-slate-200">
-                    {name}
-                  </div>
-                  <div className="text-xs text-slate-400 dark:text-slate-500">
-                    {key}
-                  </div>
-                </div>
-                <div className="ml-auto w-2 h-2 rounded-full bg-green-400"></div>
-              </div>
-            ))}
-          </div>
+        {/* 工作目录 */}
+        <div className="px-4 py-3 border-b border-slate-200 dark:border-slate-700">
+          <label className="text-xs text-slate-500 dark:text-slate-400 mb-1 block">
+            📁 工作目录（Agent 可读写此目录）
+          </label>
+          <input
+            type="text"
+            value={workspaceDir}
+            onChange={e => {
+              setWorkspaceDir(e.target.value);
+              localStorage.setItem('ai-agent-workspace', e.target.value);
+            }}
+            placeholder="/Users/sanhu/Desktop"
+            className="w-full px-2.5 py-1.5 text-xs rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 focus:outline-none focus:ring-1 focus:ring-blue-500"
+          />
         </div>
 
-        {/* 清空按钮 */}
-        <div className="p-4 border-t border-slate-200 dark:border-slate-700">
+        {/* 新建对话按钮 */}
+        <div className="p-3 border-b border-slate-200 dark:border-slate-700">
           <button
-            onClick={clearChat}
-            className="w-full py-2 px-4 rounded-lg bg-slate-100 dark:bg-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-600 transition-colors text-sm"
+            onClick={newConversation}
+            className="w-full flex items-center justify-center gap-2 py-2 px-4 rounded-lg bg-gradient-to-r from-blue-500 to-purple-600 text-white text-sm hover:from-blue-600 hover:to-purple-700 transition-all"
           >
-            🗑️ 清空对话
+            + 新对话
           </button>
+        </div>
+
+        {/* 对话历史列表 */}
+        <div className="flex-1 overflow-y-auto">
+          {conversations.map(conv => (
+            <div
+              key={conv.id}
+              onClick={() => switchConversation(conv.id)}
+              className={`group flex items-center gap-2 px-4 py-3 cursor-pointer transition-colors border-b border-slate-100 dark:border-slate-700/50 ${
+                conv.id === currentConvId
+                  ? 'bg-blue-50 dark:bg-blue-900/20'
+                  : 'hover:bg-slate-50 dark:hover:bg-slate-700/50'
+              }`}
+            >
+              <div className="flex-1 min-w-0">
+                <div className="text-sm text-slate-700 dark:text-slate-200 truncate">
+                  {conv.title}
+                </div>
+                <div className="text-xs text-slate-400 dark:text-slate-500">
+                  {conv.messages.length} 条消息
+                </div>
+              </div>
+              <button
+                onClick={(e) => { e.stopPropagation(); deleteConversation(conv.id); }}
+                className="opacity-0 group-hover:opacity-100 text-red-400 hover:text-red-600 p-1 transition-opacity"
+              >
+                <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+          ))}
+          {conversations.length === 0 && (
+            <div className="p-4 text-center text-xs text-slate-400 dark:text-slate-500">
+              暂无对话记录
+            </div>
+          )}
         </div>
       </aside>
 
@@ -376,6 +536,14 @@ export default function Home() {
                   </div>
 
                   <div className={`flex-1 ${msg.role === 'user' ? 'text-right' : ''}`}>
+                    {/* 思考过程 - 在内容上方，限制最大高度 */}
+                    {msg.reasoning && (
+                      <div className="text-xs text-purple-500 dark:text-purple-400 mb-2 p-2 bg-purple-50 dark:bg-purple-900/20 rounded-lg max-h-40 overflow-y-auto">
+                        <div className="font-medium mb-1">🧠 思考过程:</div>
+                        <div className="whitespace-pre-wrap">{msg.reasoning}</div>
+                      </div>
+                    )}
+
                     {/* 消息内容 */}
                     <div className={`inline-block rounded-2xl px-4 py-3 ${
                       msg.role === 'user'
@@ -443,13 +611,6 @@ export default function Home() {
                   🤖
                 </div>
                 <div className="bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-2xl px-4 py-3 max-w-[80%]">
-                  {/* DeepSeek 思考模式 - 思维链 */}
-                  {currentReasoning && (
-                    <div className="text-xs text-purple-500 dark:text-purple-400 mb-2 p-2 bg-purple-50 dark:bg-purple-900/20 rounded-lg">
-                      <div className="font-medium mb-1">🧠 思考过程:</div>
-                      <div className="whitespace-pre-wrap">{currentReasoning}</div>
-                    </div>
-                  )}
                   {currentThinking && (
                     <div className="text-sm text-slate-500 dark:text-slate-400 italic mb-2">
                       🤔 {currentThinking}

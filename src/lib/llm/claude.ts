@@ -152,4 +152,64 @@ export class ClaudeProvider implements LLMProvider {
       }
     }
   }
+
+  // 带工具的流式对话
+  async *chatWithToolsStream(
+    messages: Message[],
+    tools: ToolDefinition[],
+  ): AsyncIterable<import('@/types').ChatStreamEvent> {
+    const claudeTools = tools.map(tool => ({
+      name: tool.name,
+      description: tool.description,
+      input_schema: tool.parameters,
+    }));
+
+    const systemMessage = messages.find(m => m.role === 'system');
+    const otherMessages = messages.filter(m => m.role !== 'system');
+    const claudeMessages = this.convertMessages(otherMessages);
+
+    const stream = this.client.messages.stream({
+      model: this.model,
+      max_tokens: 4096,
+      system: systemMessage?.content || undefined,
+      messages: claudeMessages,
+      tools: claudeTools.length > 0 ? claudeTools : undefined,
+    });
+
+    let fullContent = '';
+    const toolCallChunks: Record<string, { id: string; name: string; inputJson: string }> = {};
+
+    for await (const event of stream) {
+      if (event.type === 'content_block_start') {
+        if (event.content_block.type === 'tool_use') {
+          toolCallChunks[event.index] = {
+            id: event.content_block.id,
+            name: event.content_block.name,
+            inputJson: '',
+          };
+        }
+      } else if (event.type === 'content_block_delta') {
+        if (event.delta.type === 'text_delta') {
+          fullContent += event.delta.text;
+          yield { type: 'token', text: event.delta.text };
+        } else if (event.delta.type === 'input_json_delta') {
+          // Claude 流式 tool call 的参数是逐步推的
+          const idx = event.index;
+          if (toolCallChunks[idx]) {
+            toolCallChunks[idx].inputJson += event.delta.partial_json;
+          }
+        }
+      }
+    }
+
+    const toolCalls: import('@/types').ToolCall[] = Object.values(toolCallChunks)
+      .filter(tc => tc.name && tc.id)
+      .map(tc => ({
+        id: tc.id,
+        name: tc.name,
+        args: (() => { try { return JSON.parse(tc.inputJson); } catch { return {}; } })(),
+      }));
+
+    yield { type: 'done', content: fullContent || null, toolCalls };
+  }
 }

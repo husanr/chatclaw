@@ -14,6 +14,20 @@
 
 import { Tool, ToolResult } from '@/types';
 import { toolRegistry } from './base';
+import vm from 'vm';
+import fs from 'fs/promises';
+import path from 'path';
+
+// 允许的文件目录（由前端传入，运行时设置）
+let allowedDir = '/tmp';
+
+export function setAllowedDir(dir: string) {
+  allowedDir = dir;
+}
+
+export function getAllowedDir(): string {
+  return allowedDir;
+}
 
 // ============================================
 // 1. 网页搜索工具
@@ -37,27 +51,49 @@ export const webSearchTool: Tool = {
     const { query } = args;
 
     try {
-      // 实际项目中，这里会调用搜索 API（如 SerpAPI、Tavily）
-      // 这里用模拟数据演示
-      const results = [
-        {
-          title: `${query} - 最新资讯`,
-          snippet: `关于${query}的最新信息...`,
-          url: `https://example.com/search?q=${encodeURIComponent(query)}`,
-        },
-        {
-          title: `${query} - 百科`,
-          snippet: `${query}的详细介绍和相关知识...`,
-          url: `https://baike.example.com/${encodeURIComponent(query)}`,
-        },
-      ];
+      // 调用 Tavily Search API
+      const apiKey = process.env.TAVILY_API_KEY;
+      if (!apiKey) {
+        return { success: false, error: '未配置 TAVILY_API_KEY' };
+      }
+
+      const response = await fetch('https://api.tavily.com/search', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          api_key: apiKey,
+          query,
+          max_results: 5,
+          include_answer: true,
+          search_depth: 'basic',
+        }),
+      });
+
+      if (!response.ok) {
+        const errText = await response.text();
+        return { success: false, error: `搜索失败: ${response.status} ${errText}` };
+      }
+
+      const data = await response.json();
+
+      const results = (data.results || []).map((r: any) => ({
+        title: r.title,
+        snippet: r.content?.substring(0, 200),
+        url: r.url,
+      }));
 
       return {
         success: true,
-        data: results,
+        data: {
+          answer: data.answer || null,
+          results,
+        },
       };
     } catch (error) {
-      return { success: false, error: '搜索失败' };
+      return {
+        success: false,
+        error: `搜索失败: ${error instanceof Error ? error.message : '未知错误'}`,
+      };
     }
   },
 };
@@ -84,10 +120,25 @@ export const calculatorTool: Tool = {
     const { expression } = args;
 
     try {
-      // 安全的数学表达式计算
-      // 使用 Function 构造器创建沙箱环境
+      // 安全检查：只允许数学表达式
       const sanitized = expression.replace(/[^0-9+\-*/().%\s]/g, '');
-      const result = new Function(`"use strict"; return (${sanitized})`)();
+      if (sanitized.trim().length === 0) {
+        throw new Error('无效的数学表达式');
+      }
+
+      // 使用 vm.createContext 沙箱执行，限制访问全局对象
+      const context = vm.createContext({
+        Math,
+        Number,
+        parseInt,
+        parseFloat,
+        isNaN,
+        isFinite,
+        Infinity,
+        NaN,
+        undefined,
+      });
+      const result = vm.runInContext(sanitized, context, { timeout: 2000 });
 
       if (typeof result !== 'number' || !isFinite(result)) {
         throw new Error('计算结果无效');
@@ -128,22 +179,54 @@ export const codeExecutorTool: Tool = {
     const { code } = args;
 
     try {
-      // ⚠️ 实际项目中必须使用沙箱（如 VM2）执行代码！
-      // 这里仅为演示，直接执行有安全风险
-      const logs: string[] = [];
-      const mockConsole = {
-        log: (...args: any[]) => logs.push(args.map(String).join(' ')),
-        error: (...args: any[]) => logs.push('[ERROR] ' + args.map(String).join(' ')),
-      };
+      // 安全检查：禁止危险关键字
+      const blocked = ['process', 'require', 'import(', 'eval(', 'Function(',
+        '__dirname', '__filename', 'child_process', 'fs', 'os', 'net',
+        'exec', 'spawn', 'exit', 'env', 'nextTick', 'setImmediate'];
+      for (const kw of blocked) {
+        if (code.includes(kw)) {
+          throw new Error(`安全限制：禁止使用 "${kw}"`);
+        }
+      }
 
-      // 创建一个安全的执行环境
-      const fn = new Function('console', `"use strict"; ${code}`);
-      const result = fn(mockConsole);
+      // 使用 vm.createContext 沙箱执行
+      const logs: string[] = [];
+      const context = vm.createContext({
+        console: {
+          log: (...args: any[]) => logs.push(args.map(String).join(' ')),
+          error: (...args: any[]) => logs.push('[ERROR] ' + args.map(String).join(' ')),
+          warn: (...args: any[]) => logs.push('[WARN] ' + args.map(String).join(' ')),
+        },
+        Math,
+        Number,
+        String,
+        Boolean,
+        Array,
+        Object,
+        JSON,
+        Date,
+        RegExp,
+        parseInt,
+        parseFloat,
+        isNaN,
+        isFinite,
+        Infinity,
+        NaN,
+        undefined,
+        Map,
+        Set,
+        Promise,
+        Error,
+        TypeError,
+        RangeError,
+      });
+
+      const result = vm.runInContext(code, context, { timeout: 5000 });
 
       return {
         success: true,
         data: {
-          output: logs.length > 0 ? logs.join('\n') : String(result),
+          output: logs.length > 0 ? logs.join('\n') : String(result ?? ''),
           returnValue: result,
         },
       };
@@ -184,63 +267,44 @@ export const fileOperationsTool: Tool = {
     },
   },
   async execute(args): Promise<ToolResult> {
-    const { action, path, content } = args;
+    const { action, path: filePath, content } = args;
 
-    // 实际项目中需要：
-    // 1. 验证路径安全性（防止访问敏感文件）
-    // 2. 使用 fs 模块操作文件
-    // 3. 添加权限控制
+    try {
+      // 安全限制：只能操作用户指定的工作目录
+      const resolved = path.resolve(filePath);
+      const resolvedAllowed = path.resolve(allowedDir);
+      if (!resolved.startsWith(resolvedAllowed + '/') && resolved !== resolvedAllowed) {
+        return { success: false, error: `安全限制：只能读写 ${resolvedAllowed} 目录下的文件` };
+      }
 
-    return {
-      success: true,
-      data: {
-        action,
-        path,
-        message: `文件操作 "${action}" 已执行（示例模式）`,
-      },
-    };
-  },
-};
-
-// ============================================
-// 5. 数据库查询工具
-// ============================================
-export const databaseQueryTool: Tool = {
-  definition: {
-    name: 'database_query',
-    description: '执行数据库查询。支持 SQL 查询语句。',
-    parameters: {
-      type: 'object',
-      properties: {
-        query: {
-          type: 'string',
-          description: 'SQL 查询语句',
-        },
-        database: {
-          type: 'string',
-          description: '数据库名称（可选）',
-        },
-      },
-      required: ['query'],
-    },
-  },
-  async execute(args): Promise<ToolResult> {
-    const { query, database } = args;
-
-    // 实际项目中需要：
-    // 1. 连接数据库（SQLite/PostgreSQL/MySQL）
-    // 2. 验证 SQL 安全性（防止 SQL 注入）
-    // 3. 执行查询并返回结果
-
-    return {
-      success: true,
-      data: {
-        query,
-        database: database || 'default',
-        message: `查询已执行（示例模式）`,
-        rows: [],
-      },
-    };
+      switch (action) {
+        case 'read': {
+          const data = await fs.readFile(resolved, 'utf-8');
+          return { success: true, data: { path: resolved, content: data } };
+        }
+        case 'write': {
+          if (!content) return { success: false, error: '写入操作需要 content 参数' };
+          await fs.mkdir(path.dirname(resolved), { recursive: true });
+          await fs.writeFile(resolved, content, 'utf-8');
+          return { success: true, data: { path: resolved, message: '写入成功' } };
+        }
+        case 'list': {
+          const entries = await fs.readdir(resolved, { withFileTypes: true });
+          const list = entries.map(e => ({
+            name: e.name,
+            type: e.isDirectory() ? 'directory' : 'file',
+          }));
+          return { success: true, data: { path: resolved, entries: list } };
+        }
+        default:
+          return { success: false, error: `不支持的操作: ${action}` };
+      }
+    } catch (error) {
+      return {
+        success: false,
+        error: `文件操作失败: ${error instanceof Error ? error.message : '未知错误'}`,
+      };
+    }
   },
 };
 
@@ -312,100 +376,6 @@ export const apiCallerTool: Tool = {
 };
 
 // ============================================
-// 7. 邮件发送工具
-// ============================================
-export const emailSenderTool: Tool = {
-  definition: {
-    name: 'email_sender',
-    description: '发送邮件。可以发送给指定收件人。',
-    parameters: {
-      type: 'object',
-      properties: {
-        to: {
-          type: 'string',
-          description: '收件人邮箱',
-        },
-        subject: {
-          type: 'string',
-          description: '邮件主题',
-        },
-        body: {
-          type: 'string',
-          description: '邮件内容',
-        },
-      },
-      required: ['to', 'subject', 'body'],
-    },
-  },
-  async execute(args): Promise<ToolResult> {
-    const { to, subject, body } = args;
-
-    // 实际项目中需要：
-    // 1. 配置 SMTP 服务器（Nodemailer）
-    // 2. 验证邮箱格式
-    // 3. 发送邮件
-
-    return {
-      success: true,
-      data: {
-        to,
-        subject,
-        message: `邮件已发送给 ${to}（示例模式）`,
-      },
-    };
-  },
-};
-
-// ============================================
-// 8. 图片生成工具
-// ============================================
-export const imageGeneratorTool: Tool = {
-  definition: {
-    name: 'image_generator',
-    description: '根据文字描述生成图片。支持指定尺寸和风格。',
-    parameters: {
-      type: 'object',
-      properties: {
-        prompt: {
-          type: 'string',
-          description: '图片描述',
-        },
-        size: {
-          type: 'string',
-          enum: ['256x256', '512x512', '1024x1024'],
-          description: '图片尺寸（默认 512x512）',
-        },
-        style: {
-          type: 'string',
-          enum: ['realistic', 'cartoon', 'abstract', 'anime'],
-          description: '图片风格（默认 realistic）',
-        },
-      },
-      required: ['prompt'],
-    },
-  },
-  async execute(args): Promise<ToolResult> {
-    const { prompt, size = '512x512', style = 'realistic' } = args;
-
-    // 实际项目中需要调用：
-    // - DALL-E API (OpenAI)
-    // - Stable Diffusion API
-    // - Midjourney API
-
-    return {
-      success: true,
-      data: {
-        prompt,
-        size,
-        style,
-        message: `图片已生成（示例模式）`,
-        imageUrl: `https://placeholder.com/${size}?text=${encodeURIComponent(prompt.substring(0, 20))}`,
-      },
-    };
-  },
-};
-
-// ============================================
 // 注册所有工具
 // ============================================
 export function registerAllTools(): void {
@@ -413,10 +383,7 @@ export function registerAllTools(): void {
   toolRegistry.register(calculatorTool);
   toolRegistry.register(codeExecutorTool);
   toolRegistry.register(fileOperationsTool);
-  toolRegistry.register(databaseQueryTool);
   toolRegistry.register(apiCallerTool);
-  toolRegistry.register(emailSenderTool);
-  toolRegistry.register(imageGeneratorTool);
 }
 
 // 导出工具注册表
