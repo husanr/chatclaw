@@ -16,6 +16,7 @@
 
 import { useState, useRef, useEffect } from 'react';
 import { ModelSelector } from '@/components/ModelSelector';
+import { KnowledgePanel } from '@/components/KnowledgePanel';
 
 // 消息类型
 interface Message {
@@ -235,6 +236,8 @@ export default function Home() {
             baseURL: apiConfig.baseURL,
             apiKey: apiConfig.apiKey,
             allowedDir: workspaceDir,
+            embeddingApiKey: localStorage.getItem('ai-agent-embedding-key') || undefined,
+            embeddingBaseURL: localStorage.getItem('ai-agent-embedding-url') || undefined,
           },
           history: currentHistory.map(m => ({
             role: m.role,
@@ -413,6 +416,11 @@ export default function Home() {
             placeholder="/Users/sanhu/Desktop"
             className="w-full px-2.5 py-1.5 text-xs rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 focus:outline-none focus:ring-1 focus:ring-blue-500"
           />
+        </div>
+
+        {/* 知识库 */}
+        <div className="px-4 py-3 border-b border-slate-200 dark:border-slate-700">
+          <KnowledgePanel apiKey={apiConfig.apiKey} baseURL={apiConfig.baseURL} />
         </div>
 
         {/* 新建对话按钮 */}

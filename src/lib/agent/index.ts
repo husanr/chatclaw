@@ -87,6 +87,7 @@ export const defaultConfig: AgentConfig = {
     'code_executor',
     'file_operations',
     'api_caller',
+    'knowledge_search',
   ],
 };
 

@@ -384,7 +384,57 @@ export function registerAllTools(): void {
   toolRegistry.register(codeExecutorTool);
   toolRegistry.register(fileOperationsTool);
   toolRegistry.register(apiCallerTool);
+  toolRegistry.register(knowledgeSearchTool);
 }
+
+// ============================================
+// 6. 知识库搜索工具（RAG）
+// ============================================
+
+// 运行时存储 apiConfig（由 API route 设置）
+let ragApiConfig = { apiKey: '', baseURL: '', embeddingApiKey: '', embeddingBaseURL: '' };
+
+export function setRagApiConfig(config: { apiKey: string; baseURL: string; embeddingApiKey?: string; embeddingBaseURL?: string }) {
+  ragApiConfig = {
+    apiKey: config.apiKey,
+    baseURL: config.baseURL,
+    embeddingApiKey: config.embeddingApiKey || config.apiKey,
+    embeddingBaseURL: config.embeddingBaseURL || config.baseURL,
+  };
+}
+
+export const knowledgeSearchTool: Tool = {
+  definition: {
+    name: 'knowledge_search',
+    description: '搜索本地知识库。当用户上传了文档后，可以用这个工具基于文档内容回答问题。',
+    parameters: {
+      type: 'object',
+      properties: {
+        query: {
+          type: 'string',
+          description: '搜索关键词或问题',
+        },
+      },
+      required: ['query'],
+    },
+  },
+  async execute(args): Promise<ToolResult> {
+    const { query } = args;
+    try {
+      const { searchKnowledge } = await import('@/lib/rag');
+      if (!ragApiConfig.embeddingApiKey) {
+        return { success: false, error: '知识库未配置 Embedding API Key' };
+      }
+      const results = await searchKnowledge(query, ragApiConfig.embeddingApiKey, ragApiConfig.embeddingBaseURL, 3);
+      if (results.length === 0) {
+        return { success: true, data: { message: '知识库中没有找到相关内容', results: [] } };
+      }
+      return { success: true, data: { results } };
+    } catch (error) {
+      return { success: false, error: `知识库搜索失败: ${error instanceof Error ? error.message : '未知错误'}` };
+    }
+  },
+};
 
 // 导出工具注册表
 export { toolRegistry } from './base';
