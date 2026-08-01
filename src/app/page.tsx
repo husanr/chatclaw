@@ -383,8 +383,8 @@ export default function Home() {
               🤖
             </div>
             <div>
-              <h1 className="font-bold text-lg text-slate-800 dark:text-white">AI Agent</h1>
-              <p className="text-xs text-slate-500 dark:text-slate-400">智能助手</p>
+              <h1 className="font-bold text-lg text-slate-800 dark:text-white">🐾 chatClaw</h1>
+              <p className="text-xs text-slate-500 dark:text-slate-400">智能 AI 助手</p>
             </div>
           </div>
         </div>
@@ -481,7 +481,7 @@ export default function Home() {
             </div>
             <div>
               <h2 className="font-semibold text-slate-800 dark:text-white">
-                AI Agent
+                chatClaw
               </h2>
               <p className="text-xs text-slate-500 dark:text-slate-400">
                 基于 ReAct 模式 · 支持多工具调用
@@ -499,7 +499,7 @@ export default function Home() {
                 🤖
               </div>
               <h2 className="text-2xl font-bold text-slate-800 dark:text-white mb-2">
-                你好！我是 AI Agent
+                你好！我是 chatClaw
               </h2>
               <p className="text-slate-500 dark:text-slate-400 max-w-md">
                 我可以使用各种工具来帮助你完成任务。试试问我：
@@ -675,7 +675,7 @@ export default function Home() {
               </button>
             </div>
             <div className="mt-2 text-xs text-slate-400 text-center">
-              AI Agent · 基于 ReAct 模式 · 支持 8 种工具
+              chatClaw · 基于 ReAct 模式 · 支持知识库 + 6 种工具
             </div>
           </div>
         </div>

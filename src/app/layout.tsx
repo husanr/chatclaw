@@ -13,8 +13,8 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "AI Agent 智能助手",
-  description: "基于 ReAct 模式的 AI Agent，支持多种工具调用",
+  title: "chatClaw",
+  description: "chatClaw - 智能 AI 助手，支持知识库、工具调用、多模型",
 };
 
 export default function RootLayout({
