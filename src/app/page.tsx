@@ -474,9 +474,7 @@ export default function Home() {
         {/* 标题栏 */}
         <header className="h-16 bg-white/80 dark:bg-slate-800/80 backdrop-blur-sm border-b border-slate-200 dark:border-slate-700 flex items-center px-6">
           <div className="flex items-center gap-3">
-            <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center text-white text-sm">
-              🤖
-            </div>
+            <img src="/logo.jpg" alt="chatClaw" className="w-8 h-8 rounded-lg object-cover" />
             <div>
               <h2 className="font-semibold text-slate-800 dark:text-white">
                 chatClaw
@@ -538,7 +536,7 @@ export default function Home() {
                       ? 'bg-gradient-to-br from-green-400 to-blue-500'
                       : 'bg-slate-200 dark:bg-slate-700'
                   }`}>
-                    {msg.role === 'user' ? '👤' : <img src="/logo.jpg" alt="chatClaw" className="w-5 h-5 rounded object-cover" />}
+                    {msg.role === 'user' ? '👤' : <img src="/logo.jpg" alt="chatClaw" className="rounded object-cover" />}
                   </div>
 
                   <div className={`flex-1 ${msg.role === 'user' ? 'text-right' : ''}`}>
