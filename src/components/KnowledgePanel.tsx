@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 
 interface KnowledgePanelProps {
   apiKey: string;
@@ -14,6 +14,48 @@ interface DocInfo {
   chunks: number;
 }
 
+// ---- IndexedDB 工具函数 ----
+const DB_NAME = 'chatclaw-rag';
+const DB_VERSION = 1;
+const STORE_NAME = 'chunks';
+
+function openDB(): Promise<IDBDatabase> {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open(DB_NAME, DB_VERSION);
+    req.onupgradeneeded = () => {
+      req.result.createObjectStore(STORE_NAME, { keyPath: 'id' });
+    };
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+
+async function saveToIndexedDB(chunks: unknown[]): Promise<void> {
+  const db = await openDB();
+  const tx = db.transaction(STORE_NAME, 'readwrite');
+  const store = tx.objectStore(STORE_NAME);
+  store.clear();
+  for (const chunk of chunks) {
+    store.put(chunk);
+  }
+  return new Promise((resolve, reject) => {
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+async function loadFromIndexedDB(): Promise<unknown[]> {
+  const db = await openDB();
+  const tx = db.transaction(STORE_NAME, 'readonly');
+  const store = tx.objectStore(STORE_NAME);
+  const req = store.getAll();
+  return new Promise((resolve, reject) => {
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+
+// ---- 组件 ----
 export function KnowledgePanel({ apiKey, baseURL, embeddingApiKey, embeddingBaseURL }: KnowledgePanelProps) {
   const [docs, setDocs] = useState<DocInfo[]>([]);
   const [uploading, setUploading] = useState(false);
@@ -27,24 +69,39 @@ export function KnowledgePanel({ apiKey, baseURL, embeddingApiKey, embeddingBase
     return localStorage.getItem('ai-agent-embedding-url') || '';
   });
 
-  // 实际用的 embedding key/url（优先用户单独配置，否则用主 API 的）
   const effectiveEmbKey = embKey || embeddingApiKey || apiKey;
   const effectiveEmbURL = embURL || embeddingBaseURL || baseURL;
 
-  const loadDocs = async () => {
-    try {
-      const res = await fetch('/api/rag', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'list', apiKey: effectiveEmbKey, baseURL: effectiveEmbURL }),
-      });
-      const data = await res.json();
-      if (data.success) setDocs(data.documents);
-    } catch {}
-  };
+  // 调 RAG API
+  const ragFetch = useCallback(async (action: string, extra: Record<string, unknown> = {}) => {
+    const res = await fetch('/api/rag', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action, apiKey: effectiveEmbKey, baseURL: effectiveEmbURL, ...extra }),
+    });
+    return res.json();
+  }, [effectiveEmbKey, effectiveEmbURL]);
 
-  useEffect(() => { loadDocs(); }, []);
+  // 页面加载：从 IndexedDB 恢复到服务端，然后加载文档列表
+  useEffect(() => {
+    (async () => {
+      try {
+        const stored = await loadFromIndexedDB();
+        if (stored.length > 0) {
+          // 恢复到服务端内存
+          await ragFetch('restore', { chunksData: stored });
+          console.log(`[RAG] 从 IndexedDB 恢复了 ${stored.length} 个向量到服务端`);
+        }
+        // 加载文档列表
+        const data = await ragFetch('list');
+        if (data.success) setDocs(data.documents);
+      } catch (e) {
+        console.error('[RAG] 初始化失败:', e);
+      }
+    })();
+  }, []);
 
+  // 上传文件
   const handleUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -54,21 +111,16 @@ export function KnowledgePanel({ apiKey, baseURL, embeddingApiKey, embeddingBase
 
     try {
       const content = await file.text();
-      const res = await fetch('/api/rag', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          action: 'index',
-          content,
-          source: file.name,
-          apiKey: effectiveEmbKey,
-          baseURL: effectiveEmbURL,
-        }),
-      });
-      const data = await res.json();
+      const data = await ragFetch('index', { content, source: file.name });
       if (data.success) {
+        // 保存完整向量到 IndexedDB
+        if (data.allChunks) {
+          await saveToIndexedDB(data.allChunks);
+          console.log(`[RAG] 已保存 ${data.allChunks.length} 个向量到 IndexedDB`);
+        }
         setMessage(`✅ ${file.name} 已索引（${data.chunks} 个片段）`);
-        loadDocs();
+        const listData = await ragFetch('list');
+        if (listData.success) setDocs(listData.documents);
       } else {
         setMessage(`❌ ${data.error}`);
       }
@@ -80,14 +132,15 @@ export function KnowledgePanel({ apiKey, baseURL, embeddingApiKey, embeddingBase
     }
   };
 
+  // 删除文档
   const handleDelete = async (source: string) => {
     try {
-      await fetch('/api/rag', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'delete', source, apiKey: effectiveEmbKey, baseURL: effectiveEmbURL }),
-      });
-      loadDocs();
+      const data = await ragFetch('delete', { source });
+      if (data.allChunks) {
+        await saveToIndexedDB(data.allChunks);
+      }
+      const listData = await ragFetch('list');
+      if (listData.success) setDocs(listData.documents);
     } catch {}
   };
 

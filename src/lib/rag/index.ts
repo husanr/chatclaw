@@ -2,8 +2,7 @@
 // RAG 核心模块：Embedding + 向量存储 + 文档分块
 // ============================================
 
-import fs from 'fs/promises';
-import path from 'path';
+// 向量存储已改为纯内存 + 前端 IndexedDB，不再需要 fs/path
 
 // ---- 类型 ----
 export interface DocumentChunk {
@@ -92,23 +91,8 @@ function cosineSimilarity(a: number[], b: number[]): number {
   return dot / (Math.sqrt(normA) * Math.sqrt(normB) || 1);
 }
 
-// ---- 向量存储（内存 + 文件持久化）----
-const STORE_FILE = '/tmp/ai-agent-rag-store.json';
+// ---- 向量存储（纯内存，前端 IndexedDB 做持久化备份）----
 let chunks: DocumentChunk[] = [];
-let storeLoaded = false;
-
-async function loadStore() {
-  if (storeLoaded) return;
-  try {
-    const data = await fs.readFile(STORE_FILE, 'utf-8');
-    chunks = JSON.parse(data);
-  } catch { chunks = []; }
-  storeLoaded = true;
-}
-
-async function saveStore() {
-  await fs.writeFile(STORE_FILE, JSON.stringify(chunks), 'utf-8');
-}
 
 // ---- 公开 API ----
 
@@ -132,8 +116,6 @@ export async function indexDocument(
   baseURL: string,
   model?: string,
 ): Promise<{ chunks: number; source: string }> {
-  await loadStore();
-
   // 先删除同一来源的旧数据
   chunks = chunks.filter(c => c.metadata.source !== source);
 
@@ -160,8 +142,6 @@ export async function indexDocument(
     }
   }
 
-  await saveStore();
-
   if (indexed === 0 && textChunks.length > 0) {
     throw new Error(`所有片段索引失败。文档产生了 ${textChunks.length} 个片段但 Embedding 全部失败。错误: ${errors.join('; ')}`);
   }
@@ -177,8 +157,6 @@ export async function searchKnowledge(
   topK = 3,
   model?: string,
 ): Promise<SearchResult[]> {
-  await loadStore();
-
   if (chunks.length === 0) return [];
 
   const embeddingModel = model || pickEmbeddingModel(baseURL, '');
@@ -199,7 +177,6 @@ export async function searchKnowledge(
 
 /** 列出已索引的文档 */
 export async function listDocuments(): Promise<{ source: string; chunks: number }[]> {
-  await loadStore();
   const sources: Record<string, number> = {};
   for (const c of chunks) {
     sources[c.metadata.source] = (sources[c.metadata.source] || 0) + 1;
@@ -209,12 +186,18 @@ export async function listDocuments(): Promise<{ source: string; chunks: number 
 
 /** 删除文档 */
 export async function deleteDocument(source: string): Promise<boolean> {
-  await loadStore();
   const before = chunks.length;
   chunks = chunks.filter(c => c.metadata.source !== source);
-  if (chunks.length < before) {
-    await saveStore();
-    return true;
-  }
-  return false;
+  return chunks.length < before;
+}
+
+/** 从前端 IndexedDB 恢复向量到服务端内存 */
+export function restoreChunks(data: DocumentChunk[]): { restored: number } {
+  chunks = data;
+  return { restored: data.length };
+}
+
+/** 获取当前所有向量（供前端保存到 IndexedDB） */
+export function getAllChunks(): DocumentChunk[] {
+  return chunks;
 }
