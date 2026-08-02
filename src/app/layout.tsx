@@ -15,6 +15,11 @@ const geistMono = Geist_Mono({
 export const metadata: Metadata = {
   title: "chatClaw",
   description: "chatClaw - 智能 AI 助手，支持知识库、工具调用、多模型",
+  icons: {
+    icon: '/favicon.ico',
+    shortcut: '/favicon-32.png',
+    apple: '/apple-touch-icon.png',
+  },
 };
 
 export default function RootLayout({

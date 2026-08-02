@@ -379,11 +379,9 @@ export default function Home() {
         {/* Logo */}
         <div className="p-6 border-b border-slate-200 dark:border-slate-700">
           <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center text-white text-xl">
-              🤖
-            </div>
+            <img src="/logo.jpg" alt="chatClaw" className="w-10 h-10 rounded-xl object-cover" />
             <div>
-              <h1 className="font-bold text-lg text-slate-800 dark:text-white">🐾 chatClaw</h1>
+              <h1 className="font-bold text-lg text-slate-800 dark:text-white">chatClaw</h1>
               <p className="text-xs text-slate-500 dark:text-slate-400">智能 AI 助手</p>
             </div>
           </div>
@@ -540,7 +538,7 @@ export default function Home() {
                       ? 'bg-gradient-to-br from-green-400 to-blue-500'
                       : 'bg-gradient-to-br from-blue-500 to-purple-600'
                   }`}>
-                    {msg.role === 'user' ? '👤' : '🤖'}
+                    {msg.role === 'user' ? '👤' : <img src="/logo.jpg" alt="chatClaw" className="w-5 h-5 rounded object-cover" />}
                   </div>
 
                   <div className={`flex-1 ${msg.role === 'user' ? 'text-right' : ''}`}>
@@ -616,7 +614,7 @@ export default function Home() {
             <div className="flex justify-start">
               <div className="flex items-start gap-3">
                 <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center text-white text-sm">
-                  🤖
+                  <img src="/logo.jpg" alt="chatClaw" className="w-4 h-4 rounded object-cover inline" />
                 </div>
                 <div className="bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-2xl px-4 py-3 max-w-[80%]">
                   {currentThinking && (
