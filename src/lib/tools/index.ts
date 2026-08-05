@@ -17,6 +17,8 @@ import { toolRegistry } from './base';
 import vm from 'vm';
 import fs from 'fs/promises';
 import path from 'path';
+import { getConfigAll, getConfig, setConfig } from '../config';
+import { storeMemory, listMemory, recallMemory, forgetMemory } from '../memory';
 
 // 允许的文件目录（由前端传入，运行时设置）
 let allowedDir = '/tmp';
@@ -27,6 +29,12 @@ export function setAllowedDir(dir: string) {
 
 export function getAllowedDir(): string {
   return allowedDir;
+}
+
+// 当前对话使用的 API 凭据（由 chat route 设置），供图片生成等工具默认复用
+let chatCredentials = { apiKey: '', baseURL: '' };
+export function setChatCredentials(c: { apiKey: string; baseURL: string }) {
+  chatCredentials = { apiKey: c.apiKey, baseURL: c.baseURL };
 }
 
 // ============================================
@@ -309,6 +317,302 @@ export const fileOperationsTool: Tool = {
 };
 
 // ============================================
+// 5. 应用配置工具（让 agent 能运行时配置，改完立即生效）
+// ============================================
+export const appConfigTool: Tool = {
+  definition: {
+    name: 'app_config',
+    description: '读取或修改应用的持久化配置。例如配置图片生成模型的 API 地址（imageBaseURL）、模型名（imageModel）、API Key（imageApiKey）。修改后立即生效，后续工具调用会使用新配置。',
+    parameters: {
+      type: 'object',
+      properties: {
+        action: {
+          type: 'string',
+          enum: ['get', 'set', 'list'],
+          description: '操作类型: list(列出所有), get(读取单个), set(设置)',
+        },
+        key: {
+          type: 'string',
+          description: '配置键，如 imageBaseURL、imageModel、imageApiKey',
+        },
+        value: {
+          type: 'string',
+          description: '配置值（set 时使用）',
+        },
+      },
+      required: ['action'],
+    },
+  },
+  async execute(args): Promise<ToolResult> {
+    const { action, key, value } = args;
+    try {
+      if (action === 'list') {
+        const all = await getConfigAll();
+        return { success: true, data: { config: all } };
+      }
+      if (action === 'get') {
+        if (!key) return { success: false, error: 'get 操作需要 key 参数' };
+        const v = await getConfig(key);
+        return { success: true, data: { key, value: v ?? null } };
+      }
+      if (action === 'set') {
+        if (!key) return { success: false, error: 'set 操作需要 key 参数' };
+        if (value === undefined || value === null) return { success: false, error: 'set 操作需要 value 参数' };
+        await setConfig(key, value);
+        return { success: true, data: { key, value, message: `已保存配置 ${key} = ${value}` } };
+      }
+      return { success: false, error: `不支持的操作: ${action}` };
+    } catch (error) {
+      return { success: false, error: `配置操作失败: ${error instanceof Error ? error.message : String(error)}` };
+    }
+  },
+};
+
+// ============================================
+// 5.5 图片生成工具（地址/模型从配置读取，非写死）
+// ============================================
+export const imageGeneratorTool: Tool = {
+  definition: {
+    name: 'image_generator',
+    description: '根据文字描述调用图片生成 API，返回图片 URL。默认复用当前对话模型的 API Key 和 BaseURL；如需不同的图片服务，用 app_config 配置 imageBaseURL/imageApiKey/imageModel 覆盖。',
+    parameters: {
+      type: 'object',
+      properties: {
+        prompt: {
+          type: 'string',
+          description: '图片的文字描述',
+        },
+        size: {
+          type: 'string',
+          description: '图片尺寸，如 1024x1024（可选）',
+        },
+      },
+      required: ['prompt'],
+    },
+  },
+  async execute(args): Promise<ToolResult> {
+    const { prompt, size } = args;
+    try {
+      // 优先用 app_config 覆盖值，否则默认复用当前对话凭据
+      const baseURL = String(await getConfig('imageBaseURL') || '').trim() || chatCredentials.baseURL;
+      const apiKey = String(await getConfig('imageApiKey') || '').trim() || chatCredentials.apiKey;
+      const model = String(await getConfig('imageModel') || '').trim() || 'dall-e-3';
+
+      if (!baseURL) {
+        return { success: false, error: '未配置图片 API 地址（当前对话也无 BaseURL）。可用 app_config 设置 imageBaseURL，或先发起一次对话' };
+      }
+
+      const base = baseURL.replace(/\/+$/, '');
+      const url = base.endsWith('/v1') ? `${base}/images/generations` : `${base}/v1/images/generations`;
+
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+      if (apiKey) headers['Authorization'] = `Bearer ${apiKey}`;
+
+      const res = await fetch(url, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ model, prompt, n: 1, ...(size ? { size } : {}) }),
+        signal: AbortSignal.timeout(60000),
+      });
+
+      if (!res.ok) {
+        const err = await res.text();
+        return { success: false, error: `图片生成失败: ${res.status} ${err.substring(0, 200)}` };
+      }
+
+      const data = await res.json();
+      const images = (data.data || [])
+        .map((d: any) => d.url || (d.b64_json ? `data:image/png;base64,${d.b64_json}` : null))
+        .filter(Boolean);
+      return { success: true, data: { images, model, url } };
+    } catch (error) {
+      return { success: false, error: `图片生成失败: ${error instanceof Error ? error.message : String(error)}` };
+    }
+  },
+};
+
+// ============================================
+// 7. 时钟工具
+// ============================================
+export const getTimeTool: Tool = {
+  definition: {
+    name: 'get_time',
+    description: '获取当前的日期和时间（北京时间）。用于回答"今天几号""现在几点"等。',
+    parameters: { type: 'object', properties: {}, required: [] },
+  },
+  async execute(): Promise<ToolResult> {
+    const now = new Date();
+    return {
+      success: true,
+      data: {
+        iso: now.toISOString(),
+        beijing: now.toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' }),
+        weekday: now.toLocaleDateString('zh-CN', { timeZone: 'Asia/Shanghai', weekday: 'long' }),
+        unix: now.getTime(),
+      },
+    };
+  },
+};
+
+// ============================================
+// 8. 网页抓取工具
+// ============================================
+export const webpageFetchTool: Tool = {
+  definition: {
+    name: 'webpage_fetch',
+    description: '抓取网页并返回可读文本内容（去除 HTML 标签）。用于读取 web_search 摘要之外的完整内容。',
+    parameters: {
+      type: 'object',
+      properties: {
+        url: { type: 'string', description: '要抓取的网页地址' },
+      },
+      required: ['url'],
+    },
+  },
+  async execute(args): Promise<ToolResult> {
+    const { url } = args;
+    try {
+      const res = await fetch(url, {
+        headers: { 'User-Agent': 'Mozilla/5.0 (compatible; ChatClaw/1.0)' },
+        signal: AbortSignal.timeout(15000),
+      });
+      if (!res.ok) return { success: false, error: `抓取失败: ${res.status}` };
+      const html = await res.text();
+      const text = html
+        .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+        .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+        .replace(/<[^>]+>/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+      const truncated = text.length > 8000 ? text.slice(0, 8000) + '...' : text;
+      return { success: true, data: { url, contentLength: text.length, content: truncated } };
+    } catch (error) {
+      return { success: false, error: `抓取失败: ${error instanceof Error ? error.message : String(error)}` };
+    }
+  },
+};
+
+// ============================================
+// 9. 长期记忆工具
+// ============================================
+export const memoryTool: Tool = {
+  definition: {
+    name: 'memory',
+    description: '长期记忆：跨会话记住或回忆信息。store 保存一条事实，recall 按关键词回忆，list 列出全部，forget 删除。',
+    parameters: {
+      type: 'object',
+      properties: {
+        action: { type: 'string', enum: ['store', 'recall', 'list', 'forget'], description: '操作' },
+        content: { type: 'string', description: 'store: 想记住的内容；recall: 搜索关键词；forget: id 或内容' },
+      },
+      required: ['action'],
+    },
+  },
+  async execute(args): Promise<ToolResult> {
+    const { action, content } = args;
+    try {
+      switch (action) {
+        case 'store': {
+          if (!content) return { success: false, error: 'store 需要 content 参数' };
+          const item = await storeMemory(content);
+          return { success: true, data: { message: '已记住', id: item.id } };
+        }
+        case 'recall': {
+          const matched = content ? await recallMemory(content) : await listMemory();
+          return { success: true, data: { items: matched } };
+        }
+        case 'list': {
+          return { success: true, data: { items: await listMemory() } };
+        }
+        case 'forget': {
+          if (!content) return { success: false, error: 'forget 需要 content（id 或内容）' };
+          const removed = await forgetMemory(content);
+          return { success: true, data: { removed, message: removed ? '已删除' : '未找到匹配的记忆' } };
+        }
+        default:
+          return { success: false, error: `不支持的操作: ${action}` };
+      }
+    } catch (error) {
+      return { success: false, error: `记忆操作失败: ${error instanceof Error ? error.message : String(error)}` };
+    }
+  },
+};
+
+// ============================================
+// 10. 动态工具加载工具（自我扩展）
+// ============================================
+// 从 allowedDir 内的文件动态加载并注册一个新工具。
+// 用 vm 沙箱执行（绕开 bundler 的动态 import 限制），工具文件用 CommonJS module.exports 导出。
+async function loadToolFromFile(filePath: string): Promise<Tool> {
+  const code = await fs.readFile(filePath, 'utf-8');
+
+  // 沙箱提供常用全局（console/fetch 等），不暴露 require/process/fs，更安全
+  const sandbox: any = {
+    console,
+    fetch,
+    Math, JSON, Date, Object, Array, String, Number, Boolean, RegExp,
+    Map, Set, Promise, Uint8Array,
+    setTimeout, clearTimeout, setInterval, clearInterval,
+    module: { exports: {} },
+    exports: {},
+  };
+  sandbox.exports = sandbox.module.exports;
+
+  vm.createContext(sandbox);
+  vm.runInContext(code, sandbox, { timeout: 5000 });
+
+  const tool: Tool = sandbox.module.exports ?? sandbox.tool;
+  if (!tool || typeof tool.execute !== 'function' || !tool.definition?.name) {
+    throw new Error('工具文件需用 CommonJS 导出 module.exports（含 definition.name 和 execute 函数）');
+  }
+  return tool;
+}
+
+export const reloadTool: Tool = {
+  definition: {
+    name: 'reload_tool',
+    description: '动态加载/卸载工具，让 agent 能给自己扩展新能力。register：从文件加载并注册新工具。工具文件须为自包含的 .js 文件（须在 allowedDir 内），用 CommonJS 写 module.exports = { definition: {name,description,parameters}, execute(args) }，execute 内可用 fetch 调外部 API、console 输出。unregister：按名称卸载；list：列出已注册工具。加载前先用 file_operations write 写好 .js 文件。',
+    parameters: {
+      type: 'object',
+      properties: {
+        action: { type: 'string', enum: ['register', 'unregister', 'list'], description: '操作' },
+        file: { type: 'string', description: 'register 时加载的工具文件路径（须在 allowedDir 内）' },
+        name: { type: 'string', description: 'unregister 时的工具名' },
+      },
+      required: ['action'],
+    },
+  },
+  async execute(args): Promise<ToolResult> {
+    const { action, file, name } = args;
+    try {
+      if (action === 'list') {
+        return { success: true, data: { tools: toolRegistry.list() } };
+      }
+      if (action === 'register') {
+        if (!file) return { success: false, error: 'register 需要 file 参数' };
+        const resolved = path.resolve(file);
+        const allowed = path.resolve(getAllowedDir());
+        if (!resolved.startsWith(allowed + '/') && resolved !== allowed) {
+          return { success: false, error: `安全限制：工具文件须在 ${allowed} 目录内` };
+        }
+        const tool = await loadToolFromFile(resolved);
+        toolRegistry.register(tool);
+        toolRegistry.enableDynamic(tool.definition.name);
+        return { success: true, data: { message: `已加载并注册工具 ${tool.definition.name}` } };
+      }
+      if (action === 'unregister') {
+        if (!name) return { success: false, error: 'unregister 需要 name 参数' };
+        const removed = toolRegistry.unregister(name);
+        return { success: true, data: { removed, message: removed ? `已卸载 ${name}` : `未找到 ${name}` } };
+      }
+      return { success: false, error: `不支持的操作: ${action}` };
+    } catch (error) {
+      return { success: false, error: `工具加载失败: ${error instanceof Error ? error.message : String(error)}` };
+    }
+  },
+};
+
+// ============================================
 // 6. API 调用工具
 // ============================================
 export const apiCallerTool: Tool = {
@@ -385,6 +689,12 @@ export function registerAllTools(): void {
   toolRegistry.register(fileOperationsTool);
   toolRegistry.register(apiCallerTool);
   toolRegistry.register(knowledgeSearchTool);
+  toolRegistry.register(appConfigTool);
+  toolRegistry.register(imageGeneratorTool);
+  toolRegistry.register(getTimeTool);
+  toolRegistry.register(webpageFetchTool);
+  toolRegistry.register(memoryTool);
+  toolRegistry.register(reloadTool);
 }
 
 // ============================================

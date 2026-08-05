@@ -79,8 +79,9 @@ export function createAgent(config: AgentConfig, history?: Message[]): Agent {
 // 默认配置
 export const defaultConfig: AgentConfig = {
   model: 'openai-gpt-4o',
-  maxIterations: 10,
+  maxIterations: 25,
   temperature: 0.7,
+  maxContextMessages: 30,
   tools: [
     'web_search',
     'calculator',
@@ -88,6 +89,12 @@ export const defaultConfig: AgentConfig = {
     'file_operations',
     'api_caller',
     'knowledge_search',
+    'app_config',
+    'image_generator',
+    'get_time',
+    'webpage_fetch',
+    'memory',
+    'reload_tool',
   ],
 };
 

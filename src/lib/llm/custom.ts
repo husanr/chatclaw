@@ -15,6 +15,7 @@
 
 import OpenAI from 'openai';
 import { Message, ToolDefinition, ToolCall, LLMProvider } from '@/types';
+import { withRetry } from './retry';
 
 // 自定义模型配置
 export interface CustomModelConfig {
@@ -127,13 +128,13 @@ export class CustomLLMProvider implements LLMProvider {
     const choice = response.choices[0];
     const message = choice.message;
 
-    // 解析工具调用
+    // 解析工具调用（参数 JSON 解析失败时回退 `{}`，交给上层校验/自我纠错）
     const toolCalls: ToolCall[] = (message.tool_calls || [])
       .filter(tc => tc.type === 'function')
       .map(tc => ({
         id: tc.id,
         name: (tc as any).function.name,
-        args: JSON.parse((tc as any).function.arguments),
+        args: (() => { try { return JSON.parse((tc as any).function.arguments); } catch { return {}; } })(),
       }));
 
     // 获取 reasoning_content（DeepSeek 思考模式）
@@ -175,19 +176,26 @@ export class CustomLLMProvider implements LLMProvider {
       };
     }
 
-    // 使用 fetch 直接调用 API
-    const response = await fetch(`${this.config.baseURL}/chat/completions`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${this.config.apiKey}`,
-      },
-      body: JSON.stringify(body),
-    });
+    // 使用 fetch 直接调用 API（带指数退避重试，只在开始流式前重试）
+    const response = await withRetry(async () => {
+      const res = await fetch(`${this.config.baseURL}/chat/completions`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${this.config.apiKey}`,
+        },
+        body: JSON.stringify(body),
+      });
 
-    if (!response.ok) {
-      throw new Error(`API request failed: ${response.status} ${response.statusText}`);
-    }
+      if (!res.ok) {
+        const err = new Error(`API request failed: ${res.status} ${res.statusText}`) as Error & { status?: number };
+        err.status = res.status;
+        throw err;
+      }
+      return res;
+    }, {
+      onRetry: (attempt, err) => console.log(`[LLM] streamChat 重试 #${attempt}: ${err instanceof Error ? err.message : err}`),
+    });
 
     const reader = response.body?.getReader();
     if (!reader) {
@@ -292,19 +300,27 @@ export class CustomLLMProvider implements LLMProvider {
       body.extra_body = { thinking: { type: 'enabled' } };
     }
 
-    const response = await fetch(`${this.config.baseURL}/chat/completions`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${this.config.apiKey}`,
-      },
-      body: JSON.stringify(body),
-    });
+    // 带指数退避重试，只在开始流式前重试（避免重复推送已流出的 token）
+    const response = await withRetry(async () => {
+      const res = await fetch(`${this.config.baseURL}/chat/completions`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${this.config.apiKey}`,
+        },
+        body: JSON.stringify(body),
+      });
 
-    if (!response.ok) {
-      const errText = await response.text().catch(() => '');
-      throw new Error(`API request failed: ${response.status} ${response.statusText} ${errText}`);
-    }
+      if (!res.ok) {
+        const errText = await res.text().catch(() => '');
+        const err = new Error(`API request failed: ${res.status} ${res.statusText} ${errText}`) as Error & { status?: number };
+        err.status = res.status;
+        throw err;
+      }
+      return res;
+    }, {
+      onRetry: (attempt, err) => console.log(`[LLM] chatWithToolsStream 重试 #${attempt}: ${err instanceof Error ? err.message : err}`),
+    });
 
     const reader = response.body?.getReader();
     if (!reader) throw new Error('No response body');

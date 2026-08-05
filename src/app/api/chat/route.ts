@@ -14,7 +14,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createAgent, defaultConfig } from '@/lib/agent';
 import { AgentConfig } from '@/types';
-import { setAllowedDir, setRagApiConfig } from '@/lib/tools';
+import { setAllowedDir, setRagApiConfig, setChatCredentials } from '@/lib/tools';
 
 export async function POST(request: NextRequest) {
   try {
@@ -24,6 +24,11 @@ export async function POST(request: NextRequest) {
     // 设置工作目录
     if (config?.allowedDir) {
       setAllowedDir(config.allowedDir);
+    }
+
+    // 保存当前对话凭据，供图片生成等工具默认复用
+    if (config?.apiKey && config?.baseURL) {
+      setChatCredentials({ apiKey: config.apiKey, baseURL: config.baseURL });
     }
 
     // 设置 RAG API 配置

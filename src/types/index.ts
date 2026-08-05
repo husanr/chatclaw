@@ -91,4 +91,5 @@ export interface AgentConfig {
   maxIterations: number;      // 最大循环次数（防止死循环）
   temperature: number;        // 创造性参数 0-1
   tools: string[];            // 启用的工具列表
+  maxContextMessages?: number; // 上下文消息数上限（超过则裁剪最旧工具对，默认 30）
 }

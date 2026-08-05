@@ -21,8 +21,41 @@
 //
 // ============================================
 
-import { Message, ToolCall, AgentConfig, LLMProvider } from '@/types';
+import { Message, ToolCall, AgentConfig, LLMProvider, Tool, ToolResult } from '@/types';
 import { toolRegistry } from '../tools/base';
+
+// 校验工具参数：对照工具定义的 parameters（properties + required）做必填和类型检查
+// 手写校验，不引入 zod——工具定义是 JSON-schema 形状，这里最贴合且零依赖
+function validateToolArgs(
+  tool: Tool,
+  args: Record<string, any>,
+): { valid: boolean; errors: string[] } {
+  const errors: string[] = [];
+  const { properties = {}, required = [] } = tool.definition.parameters;
+
+  // 必填项检查（undefined / null / 空字符串都算缺失）
+  for (const key of required) {
+    const val = args[key];
+    if (val === undefined || val === null || val === '') {
+      errors.push(`缺少必填参数 "${key}"`);
+    }
+  }
+
+  // 类型检查（宽松：数字字符串可视为 number）
+  for (const [key, val] of Object.entries(args)) {
+    const schema = properties[key];
+    if (!schema || val === undefined || val === null) continue;
+    const expected = schema.type;
+    if (!expected) continue;
+    const actual = typeof val;
+    if (actual === expected) continue;
+    if (expected === 'number' && actual === 'string' && val !== '' && !isNaN(Number(val))) continue;
+    if (expected === 'integer' && actual === 'number' && Number.isInteger(val)) continue;
+    errors.push(`参数 "${key}" 类型应为 ${expected}，实际是 ${actual}`);
+  }
+
+  return { valid: errors.length === 0, errors };
+}
 
 export class Agent {
   private llm: LLMProvider;
@@ -61,6 +94,12 @@ export class Agent {
 - code_executor: 执行 JavaScript 代码
 - file_operations: 文件读写操作
 - api_caller: 调用外部 API
+- app_config: 读取/修改应用配置（如图片 API 地址），改完立即生效
+- image_generator: 根据描述生成图片，返回图片 URL
+- get_time: 获取当前日期时间
+- webpage_fetch: 抓取网页完整文本
+- memory: 长期记忆，跨会话记住/回忆信息
+- reload_tool: 动态加载/卸载工具，扩展自身能力
 
 ## 重要规则（必须遵守）
 1. **先查知识库，再搜网页**：当用户提问时，必须先用 knowledge_search 搜索本地知识库。只有当知识库没有相关内容时，才用 web_search。
@@ -80,6 +119,11 @@ export class Agent {
 - 遇到错误要尝试其他方法
 - 最终要给出清晰、有用的回答
 - 用中文回答用户问题
+
+## 停止规则（重要）
+- 当你已经能直接回答用户时，**立即停止调用工具，直接给出最终答案**。
+- 不要为了"完成任务"而反复调用工具，除非确实需要更多信息。
+- 如果某个工具调用失败，最多重试一次；仍失败就基于已有信息回答，不要无限重试。
 
 现在，让我们开始帮助用户吧！`;
   }
@@ -154,7 +198,19 @@ export class Agent {
         console.log(`🔧 调用工具: ${tc.name}`);
         onToolCall?.(tc);
 
-        const result = await toolRegistry.execute(tc.name, tc.args);
+        // 先校验参数：不合法则不执行，把错误回填给 LLM 让它自我纠错重试
+        let result: ToolResult;
+        const tool = toolRegistry.get(tc.name);
+        const validation = tool ? validateToolArgs(tool, tc.args) : { valid: false, errors: [`工具不存在: ${tc.name}`] };
+
+        if (!validation.valid) {
+          const errorMsg = `工具 "${tc.name}" 参数校验失败: ${validation.errors.join('; ')}。收到的参数: ${JSON.stringify(tc.args)}。请修正参数后重试。`;
+          console.warn(`⚠️ ${errorMsg}`);
+          result = { success: false, error: errorMsg };
+        } else {
+          result = await toolRegistry.execute(tc.name, tc.args);
+        }
+
         onToolResult?.(result);
 
         this.messages.push({
@@ -164,10 +220,28 @@ export class Agent {
           content: JSON.stringify(result),
         });
       }
+
+      // 每轮后做上下文封顶，防止长任务超模型窗口
+      this.trimContext();
     }
 
     console.log('⚠️ 达到最大迭代次数');
     return '抱歉，任务未能在规定步骤内完成。请尝试简化您的请求。';
+  }
+
+  // 上下文封顶：超过 maxContextMessages 时，从中间裁剪最旧的完整 tool_call/tool_result 对。
+  // 绝不删 system 提示词和最近消息，绝不拆散 tool_call/tool_result 配对。
+  private trimContext(): void {
+    const max = this.config.maxContextMessages ?? 30;
+    if (this.messages.length <= max) return;
+
+    // 反复删除最旧的一对 tool(result) + 其前置 assistant(toolCalls)，直到低于上限
+    while (this.messages.length > max) {
+      const toolIdx = this.messages.findIndex(m => m.role === 'tool');
+      if (toolIdx <= 0) break; // 没有可裁剪的工具消息，放弃（保守处理）
+      const removeStart = this.messages[toolIdx - 1].role === 'assistant' ? toolIdx - 1 : toolIdx;
+      this.messages.splice(removeStart, toolIdx - removeStart + 1);
+    }
   }
 
   // 获取对话历史

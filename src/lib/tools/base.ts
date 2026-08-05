@@ -18,6 +18,8 @@ import { Tool, ToolDefinition, ToolResult } from '@/types';
 // 工具注册表 - 管理所有可用工具
 export class ToolRegistry {
   private tools: Map<string, Tool> = new Map();
+  // 动态加载的工具名（运行时注册，也会传给 LLM）
+  private dynamicallyEnabled: Set<string> = new Set();
 
   // 注册工具
   register(tool: Tool): void {
@@ -35,9 +37,22 @@ export class ToolRegistry {
     return Array.from(this.tools.values()).map(t => t.definition);
   }
 
-  // 获取启用的工具定义
+  // 获取启用的工具定义（默认启用列表 + 动态加载的工具）
   getEnabledDefinitions(enabledTools: string[]): ToolDefinition[] {
-    return this.getDefinitions().filter(d => enabledTools.includes(d.name));
+    return this.getDefinitions().filter(
+      d => enabledTools.includes(d.name) || this.dynamicallyEnabled.has(d.name),
+    );
+  }
+
+  // 标记动态加载的工具为启用（让其对 LLM 可见）
+  enableDynamic(name: string): void {
+    this.dynamicallyEnabled.add(name);
+  }
+
+  // 卸载工具（同时从动态启用集合移除）
+  unregister(name: string): boolean {
+    this.dynamicallyEnabled.delete(name);
+    return this.tools.delete(name);
   }
 
   // 执行工具

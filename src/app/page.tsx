@@ -72,6 +72,11 @@ export default function Home() {
   const [currentToolCall, setCurrentToolCall] = useState<ToolCallInfo | null>(null);
   const [model, setModel] = useState('openai-gpt-4o');
   const [apiConfig, setApiConfig] = useState({ baseURL: '', apiKey: '' });
+  const [maxIterations, setMaxIterations] = useState(() => {
+    if (typeof window === 'undefined') return 25;
+    const v = Number(localStorage.getItem('ai-agent-max-iterations'));
+    return v > 0 ? v : 25;
+  });
   const [workspaceDir, setWorkspaceDir] = useState(() => {
     if (typeof window === 'undefined') return '/tmp';
     return localStorage.getItem('ai-agent-workspace') || '/tmp';
@@ -236,6 +241,7 @@ export default function Home() {
             baseURL: apiConfig.baseURL,
             apiKey: apiConfig.apiKey,
             allowedDir: workspaceDir,
+            maxIterations,
             embeddingApiKey: localStorage.getItem('ai-agent-embedding-key') || undefined,
             embeddingBaseURL: localStorage.getItem('ai-agent-embedding-url') || undefined,
             embeddingModel: localStorage.getItem('ai-agent-embedding-model') || undefined,
@@ -417,6 +423,26 @@ export default function Home() {
           />
         </div>
 
+        {/* 最大迭代次数 */}
+        <div className="px-4 py-3 border-b border-slate-200 dark:border-slate-700">
+          <label className="text-xs text-slate-500 dark:text-slate-400 mb-1 block">
+            🔁 最大工具调用轮数
+          </label>
+          <input
+            type="number"
+            min={1}
+            max={100}
+            value={maxIterations}
+            onChange={e => {
+              const v = Number(e.target.value);
+              setMaxIterations(v >= 1 ? v : 1);
+              localStorage.setItem('ai-agent-max-iterations', String(v));
+            }}
+            className="w-full px-2.5 py-1.5 text-xs rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 focus:outline-none focus:ring-1 focus:ring-blue-500"
+          />
+          <p className="text-[10px] text-slate-400 mt-1">复杂任务调大，防止过早停止</p>
+        </div>
+
         {/* 知识库 */}
         <div className="px-4 py-3 border-b border-slate-200 dark:border-slate-700">
           <KnowledgePanel apiKey={apiConfig.apiKey} baseURL={apiConfig.baseURL} />
@@ -543,10 +569,10 @@ export default function Home() {
                   <div className={`flex-1 ${msg.role === 'user' ? 'text-right' : ''}`}>
                     {/* 思考过程 - 在内容上方，限制最大高度 */}
                     {msg.reasoning && (
-                      <div className="text-xs text-purple-500 dark:text-purple-400 mb-2 p-2 bg-purple-50 dark:bg-purple-900/20 rounded-lg max-h-40 overflow-y-auto">
-                        <div className="font-medium mb-1">🧠 思考过程:</div>
-                        <div className="whitespace-pre-wrap">{msg.reasoning}</div>
-                      </div>
+                      <details className="text-xs text-purple-500 dark:text-purple-400 mb-2 p-2 bg-purple-50 dark:bg-purple-900/20 rounded-lg">
+                        <summary className="font-medium cursor-pointer select-none">🧠 思考过程（点击展开）</summary>
+                        <div className="whitespace-pre-wrap mt-1 max-h-40 overflow-y-auto">{msg.reasoning}</div>
+                      </details>
                     )}
 
                     {/* 消息内容 */}
@@ -573,27 +599,23 @@ export default function Home() {
 
                     {/* 工具调用展示 */}
                     {msg.toolCalls && msg.toolCalls.length > 0 && (
-                      <div className="mt-3 space-y-2">
+                      <div className="mt-2 flex flex-wrap gap-1">
                         {msg.toolCalls.map((tc, i) => (
-                          <div
+                          <span
                             key={tc.id}
-                            className="inline-block bg-slate-100 dark:bg-slate-700 rounded-lg px-3 py-2 text-left"
+                            className="inline-flex items-center gap-1 bg-slate-100 dark:bg-slate-700 rounded-full px-2 py-0.5 text-xs"
+                            title={JSON.stringify(tc.args).substring(0, 200)}
                           >
-                            <div className="flex items-center gap-2 text-sm">
-                              <span>{toolIconMap[tc.name] || '🔧'}</span>
-                              <span className="font-medium text-slate-700 dark:text-slate-200">
-                                {toolNameMap[tc.name] || tc.name}
-                              </span>
-                              {tc.result ? (
-                                <span className="text-green-500 text-xs">✓ 完成</span>
-                              ) : (
-                                <span className="text-blue-500 text-xs">⏳ 执行中...</span>
-                              )}
-                            </div>
-                            <div className="text-xs text-slate-500 dark:text-slate-400 mt-1">
-                              {JSON.stringify(tc.args).substring(0, 50)}...
-                            </div>
-                          </div>
+                            <span>{toolIconMap[tc.name] || '🔧'}</span>
+                            <span className="text-slate-700 dark:text-slate-200">
+                              {toolNameMap[tc.name] || tc.name}
+                            </span>
+                            {tc.result ? (
+                              <span className="text-green-500">✓</span>
+                            ) : (
+                              <span className="text-blue-500">⏳</span>
+                            )}
+                          </span>
                         ))}
                       </div>
                     )}
