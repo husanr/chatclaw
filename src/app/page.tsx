@@ -238,6 +238,7 @@ export default function Home() {
             allowedDir: workspaceDir,
             embeddingApiKey: localStorage.getItem('ai-agent-embedding-key') || undefined,
             embeddingBaseURL: localStorage.getItem('ai-agent-embedding-url') || undefined,
+            embeddingModel: localStorage.getItem('ai-agent-embedding-model') || undefined,
           },
           history: currentHistory.map(m => ({
             role: m.role,

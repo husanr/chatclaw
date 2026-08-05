@@ -266,17 +266,17 @@ export const MODEL_CONFIGS: ModelConfig[] = [
     icon: '🔴',
   },
 
-  // ---- 豆包 (Doubao) 系列 ----
+  // ---- 火山引擎 (Volcengine) agent-plan 大模型 ----
   {
     id: 'doubao-pro',
-    name: '豆包 Pro',
-    provider: '字节跳动',
-    baseURL: 'https://ark.cn-beijing.volces.com/api/v3',
-    model: 'doubao-pro-4k',
-    envKey: 'DOUBAO_API_KEY',
+    name: '火山agent-plan',
+    provider: '火山引擎',
+    baseURL: 'https://ark.cn-beijing.volces.com/api/plan/v3',
+    model: 'ark-code-latest',
+    envKey: 'VOLC_API_KEY',
     maxTokens: 4096,
     supportsTools: true,
-    description: '豆包 Pro，字节跳动大模型',
+    description: '火山引擎 agent-plan 大模型（ark-code-latest）',
     icon: '🎵',
   },
 

@@ -96,19 +96,7 @@ let chunks: DocumentChunk[] = [];
 
 // ---- 公开 API ----
 
-/** 自动选择 embedding 模型 */
-function pickEmbeddingModel(baseURL: string, chatModel: string): string {
-  const url = baseURL.toLowerCase();
-  if (url.includes('deepseek')) return 'deepseek-embedding-v1';
-  if (url.includes('openai') || url.includes('api.openai')) return 'text-embedding-3-small';
-  if (url.includes('zhipu') || url.includes('bigmodel')) return 'embedding-3';
-  if (url.includes('dashscope') || url.includes('aliyun')) return 'qwen3.7-text-embedding';
-  if (url.includes('volces') || url.includes('ark')) return 'doubao-embedding';
-  // 默认用 OpenAI 兼容的
-  return 'text-embedding-3-small';
-}
-
-/** 索引文档：分块 → embedding → 存储 */
+/** 索引文档：分块 → embedding → 存储（embedding 必须显式配置，不自动选模型） */
 export async function indexDocument(
   content: string,
   source: string,
@@ -116,11 +104,16 @@ export async function indexDocument(
   baseURL: string,
   model?: string,
 ): Promise<{ chunks: number; source: string }> {
+  // embedding 未显式配置则直接报错，不自动选模型
+  if (!model) {
+    throw new Error('未配置 Embedding 模型（embeddingModel），请先在知识库设置中指定');
+  }
+
   // 先删除同一来源的旧数据
   chunks = chunks.filter(c => c.metadata.source !== source);
 
   const textChunks = chunkText(content);
-  const embeddingModel = model || pickEmbeddingModel(baseURL, '');
+  const embeddingModel = model;
   console.log(`[RAG] 索引文档: ${source}, ${textChunks.length} 个片段, embedding模型: ${embeddingModel}`);
   let indexed = 0;
   const errors: string[] = [];
@@ -159,8 +152,12 @@ export async function searchKnowledge(
 ): Promise<SearchResult[]> {
   if (chunks.length === 0) return [];
 
-  const embeddingModel = model || pickEmbeddingModel(baseURL, '');
-  const queryEmbedding = await getEmbedding(query, apiKey, baseURL, embeddingModel);
+  // embedding 未显式配置则直接报错，不自动选模型
+  if (!model) {
+    throw new Error('未配置 Embedding 模型（embeddingModel），请先在知识库设置中指定');
+  }
+
+  const queryEmbedding = await getEmbedding(query, apiKey, baseURL, model);
 
   const scored = chunks
     .filter(c => c.embedding)

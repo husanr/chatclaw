@@ -4,19 +4,19 @@ import { indexDocument, searchKnowledge, listDocuments, deleteDocument, restoreC
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
-    const { action, content, source, query, apiKey, baseURL, topK, chunksData } = body;
-
-    if (!apiKey || !baseURL) {
-      return NextResponse.json({ error: '请提供 API Key 和 Base URL' }, { status: 400 });
-    }
+    const { action, content, source, query, apiKey, baseURL, topK, chunksData, embeddingModel } = body;
 
     switch (action) {
       case 'index': {
         if (!content || !source) {
           return NextResponse.json({ error: '缺少 content 或 source' }, { status: 400 });
         }
+        // embedding 必须完整配置（Key + URL + 模型）
+        if (!apiKey || !baseURL || !embeddingModel) {
+          return NextResponse.json({ error: '请提供完整的 Embedding 配置（API Key、Base URL、模型）' }, { status: 400 });
+        }
         console.log(`[RAG API] 索引文档: ${source}, baseURL: ${baseURL}, key: ${apiKey.substring(0, 8)}...`);
-        const result = await indexDocument(content, source, apiKey, baseURL);
+        const result = await indexDocument(content, source, apiKey, baseURL, embeddingModel);
         // 返回完整向量供前端存 IndexedDB
         const allChunks = getAllChunks();
         return NextResponse.json({ success: true, ...result, allChunks });
@@ -26,7 +26,11 @@ export async function POST(request: NextRequest) {
         if (!query) {
           return NextResponse.json({ error: '缺少 query' }, { status: 400 });
         }
-        const results = await searchKnowledge(query, apiKey, baseURL, topK || 3);
+        // embedding 必须完整配置（Key + URL + 模型）
+        if (!apiKey || !baseURL || !embeddingModel) {
+          return NextResponse.json({ error: '请提供完整的 Embedding 配置（API Key、Base URL、模型）' }, { status: 400 });
+        }
+        const results = await searchKnowledge(query, apiKey, baseURL, topK || 3, embeddingModel);
         return NextResponse.json({ success: true, results });
       }
 

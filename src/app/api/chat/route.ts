@@ -33,6 +33,7 @@ export async function POST(request: NextRequest) {
         baseURL: config.baseURL,
         embeddingApiKey: config.embeddingApiKey || undefined,
         embeddingBaseURL: config.embeddingBaseURL || undefined,
+        embeddingModel: config.embeddingModel || undefined,
       });
     }
 

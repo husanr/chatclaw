@@ -68,19 +68,31 @@ export function KnowledgePanel({ apiKey, baseURL, embeddingApiKey, embeddingBase
     if (typeof window === 'undefined') return '';
     return localStorage.getItem('ai-agent-embedding-url') || '';
   });
+  const [embModel, setEmbModel] = useState(() => {
+    if (typeof window === 'undefined') return '';
+    return localStorage.getItem('ai-agent-embedding-model') || '';
+  });
 
-  const effectiveEmbKey = embKey || embeddingApiKey || apiKey;
-  const effectiveEmbURL = embURL || embeddingBaseURL || baseURL;
+  // embedding 必须显式配置，不借用聊天用的 apiKey/baseURL
+  const effectiveEmbKey = embKey || embeddingApiKey || '';
+  const effectiveEmbURL = embURL || embeddingBaseURL || '';
+  const effectiveEmbModel = embModel || '';
+  const embeddingConfigured = !!(effectiveEmbKey && effectiveEmbURL && effectiveEmbModel);
 
-  // 调 RAG API
+  // 调 RAG API（list/delete/restore 不需要 key，index/search 才需要完整 embedding 配置）
   const ragFetch = useCallback(async (action: string, extra: Record<string, unknown> = {}) => {
+    const body: Record<string, unknown> = { action };
+    if (effectiveEmbKey) body.apiKey = effectiveEmbKey;
+    if (effectiveEmbURL) body.baseURL = effectiveEmbURL;
+    if (effectiveEmbModel) body.embeddingModel = effectiveEmbModel;
+    Object.assign(body, extra);
     const res = await fetch('/api/rag', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ action, apiKey: effectiveEmbKey, baseURL: effectiveEmbURL, ...extra }),
+      body: JSON.stringify(body),
     });
     return res.json();
-  }, [effectiveEmbKey, effectiveEmbURL]);
+  }, [effectiveEmbKey, effectiveEmbURL, effectiveEmbModel]);
 
   // 页面加载：从 IndexedDB 恢复到服务端，然后加载文档列表
   useEffect(() => {
@@ -156,35 +168,42 @@ export function KnowledgePanel({ apiKey, baseURL, embeddingApiKey, embeddingBase
             type="file"
             accept=".txt,.md,.json,.csv,.html,.xml,.log"
             onChange={handleUpload}
-            disabled={uploading || !effectiveEmbKey}
+            disabled={uploading || !embeddingConfigured}
             className="hidden"
           />
         </label>
       </div>
 
-      {!effectiveEmbKey && (
-        <p className="text-xs text-amber-500">请先填写 API Key 以启用知识库</p>
+      {!embeddingConfigured && (
+        <p className="text-xs text-amber-500">需配置 Embedding（URL / Key / 模型）才能上传文档</p>
       )}
 
-      {/* Embedding API 单独配置（可选） */}
+      {/* Embedding API 单独配置（必须配全 Key + URL + 模型 才能用） */}
       <details className="text-xs">
-        <summary className="text-slate-400 cursor-pointer hover:text-slate-600">Embedding API 设置（可选）</summary>
+        <summary className="text-slate-400 cursor-pointer hover:text-slate-600">Embedding API 设置</summary>
         <div className="mt-1 space-y-1">
           <input
             type="text"
             value={embURL}
             onChange={e => { setEmbURL(e.target.value); localStorage.setItem('ai-agent-embedding-url', e.target.value); }}
-            placeholder="https://dashscope.aliyuncs.com/compatible-mode/v1"
+            placeholder="Embedding API 地址，如 https://dashscope.aliyuncs.com/compatible-mode/v1"
             className="w-full px-2 py-1 text-xs rounded border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800"
           />
           <input
             type="password"
             value={embKey}
             onChange={e => { setEmbKey(e.target.value); localStorage.setItem('ai-agent-embedding-key', e.target.value); }}
-            placeholder="DashScope API Key"
+            placeholder="Embedding API Key"
             className="w-full px-2 py-1 text-xs rounded border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800"
           />
-          <p className="text-slate-400">推荐通义千问 DashScope（qwen3.7-text-embedding），免费额度</p>
+          <input
+            type="text"
+            value={embModel}
+            onChange={e => { setEmbModel(e.target.value); localStorage.setItem('ai-agent-embedding-model', e.target.value); }}
+            placeholder="Embedding 模型，如 qwen3.7-text-embedding"
+            className="w-full px-2 py-1 text-xs rounded border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800"
+          />
+          <p className="text-slate-400">需配全 URL + Key + 模型三项才能索引/搜索</p>
         </div>
       </details>
 

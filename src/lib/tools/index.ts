@@ -392,14 +392,16 @@ export function registerAllTools(): void {
 // ============================================
 
 // 运行时存储 apiConfig（由 API route 设置）
-let ragApiConfig = { apiKey: '', baseURL: '', embeddingApiKey: '', embeddingBaseURL: '' };
+// embedding 必须显式配置，不自动借用聊天用的 apiKey/baseURL
+let ragApiConfig = { apiKey: '', baseURL: '', embeddingApiKey: '', embeddingBaseURL: '', embeddingModel: '' };
 
-export function setRagApiConfig(config: { apiKey: string; baseURL: string; embeddingApiKey?: string; embeddingBaseURL?: string }) {
+export function setRagApiConfig(config: { apiKey: string; baseURL: string; embeddingApiKey?: string; embeddingBaseURL?: string; embeddingModel?: string }) {
   ragApiConfig = {
     apiKey: config.apiKey,
     baseURL: config.baseURL,
-    embeddingApiKey: config.embeddingApiKey || config.apiKey,
-    embeddingBaseURL: config.embeddingBaseURL || config.baseURL,
+    embeddingApiKey: config.embeddingApiKey || '',
+    embeddingBaseURL: config.embeddingBaseURL || '',
+    embeddingModel: config.embeddingModel || '',
   };
 }
 
@@ -422,10 +424,10 @@ export const knowledgeSearchTool: Tool = {
     const { query } = args;
     try {
       const { searchKnowledge } = await import('@/lib/rag');
-      if (!ragApiConfig.embeddingApiKey) {
-        return { success: false, error: '知识库未配置 Embedding API Key' };
+      if (!ragApiConfig.embeddingApiKey || !ragApiConfig.embeddingModel) {
+        return { success: false, error: '知识库未完整配置（需要 Embedding API Key、URL 和模型）' };
       }
-      const results = await searchKnowledge(query, ragApiConfig.embeddingApiKey, ragApiConfig.embeddingBaseURL, 3);
+      const results = await searchKnowledge(query, ragApiConfig.embeddingApiKey, ragApiConfig.embeddingBaseURL, 3, ragApiConfig.embeddingModel);
       if (results.length === 0) {
         return { success: true, data: { message: '知识库中没有找到相关内容', results: [] } };
       }
