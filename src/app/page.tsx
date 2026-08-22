@@ -17,6 +17,7 @@
 import { useState, useRef, useEffect } from 'react';
 import { ModelSelector } from '@/components/ModelSelector';
 import { KnowledgePanel } from '@/components/KnowledgePanel';
+import { MarkdownMessage } from '@/components/MarkdownMessage';
 
 // 消息类型
 interface Message {
@@ -582,9 +583,15 @@ export default function Home() {
                         : 'bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-800 dark:text-white'
                     }`}>
                       {msg.content ? (
-                        <div className="whitespace-pre-wrap text-sm leading-relaxed">
-                          {msg.content}
-                        </div>
+                        msg.role === 'assistant' ? (
+                          <div className="text-sm leading-relaxed">
+                            <MarkdownMessage content={msg.content} />
+                          </div>
+                        ) : (
+                          <div className="whitespace-pre-wrap text-sm leading-relaxed">
+                            {msg.content}
+                          </div>
+                        )
                       ) : (
                         <div className="flex items-center gap-2 text-slate-400">
                           <div className="flex gap-1">
