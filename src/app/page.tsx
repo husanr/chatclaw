@@ -99,6 +99,7 @@ export default function Home() {
     question: string;
     options?: string[];
     history: any[];
+    assistantMessageId: string | null; // 暂停时的 assistant 消息，恢复时复用（避免孤儿"思考中"）
   } | null>(null);
   const [questionInput, setQuestionInput] = useState('');
   // Agent 暂停等待审批（shell 等工具）
@@ -107,6 +108,7 @@ export default function Home() {
     toolCall: ToolCallInfo;
     toolDescription: string;
     history: any[];
+    assistantMessageId: string | null;
   } | null>(null);
   const [model, setModel] = useState('openai-gpt-4o');
   const [apiConfig, setApiConfig] = useState({ baseURL: '', apiKey: '' });
@@ -322,6 +324,7 @@ export default function Home() {
                     question: data.question,
                     options: data.options,
                     history: data.history || [],
+                    assistantMessageId,
                   });
                   setIsLoading(false);
                   setCurrentThinking('');
@@ -339,6 +342,7 @@ export default function Home() {
                     },
                     toolDescription: data.toolDescription,
                     history: data.history || [],
+                    assistantMessageId,
                   });
                   setIsLoading(false);
                   setCurrentThinking('');
@@ -455,17 +459,9 @@ export default function Home() {
     };
     updateCurrentMessages(prev => [...prev, userMessage]);
 
-    // 新建 assistant 消息继续接收流式输出
-    const assistantMessageId = generateId();
-    updateCurrentMessages(prev => [...prev, {
-      id: assistantMessageId,
-      role: 'assistant',
-      content: '',
-      toolCalls: [],
-      timestamp: new Date(),
-    }]);
-
+    // 恢复流复用到暂停时的 assistant 消息（不新建，避免留下"思考中"孤儿消息）
     const saved = pendingQuestion;
+    const targetId = saved.assistantMessageId ?? generateId();
     setPendingQuestion(null);
     setQuestionInput('');
     setIsLoading(true);
@@ -475,14 +471,17 @@ export default function Home() {
       reply: { kind: 'answer', answer },
       config: buildChatConfig(),
       history: saved.history,
-    }, assistantMessageId);
+    }, targetId);
   };
 
   // 点击选项快捷回答
   const submitAnswerOption = async (option: string) => {
     if (!pendingQuestion || isLoading) return;
-    setQuestionInput(option);
-    // 等 state 更新后立即提交
+    const saved = pendingQuestion; // 先取快照，再清状态
+    setPendingQuestion(null);
+    setQuestionInput('');
+
+    // 把回答显示为一条用户消息
     const userMessage: Message = {
       id: generateId(),
       role: 'user',
@@ -491,18 +490,8 @@ export default function Home() {
     };
     updateCurrentMessages(prev => [...prev, userMessage]);
 
-    const assistantMessageId = generateId();
-    updateCurrentMessages(prev => [...prev, {
-      id: assistantMessageId,
-      role: 'assistant',
-      content: '',
-      toolCalls: [],
-      timestamp: new Date(),
-    }]);
-
-    const saved = pendingQuestion;
-    setPendingQuestion(null);
-    setQuestionInput('');
+    // 复用暂停时的 assistant 消息
+    const targetId = saved.assistantMessageId ?? generateId();
     setIsLoading(true);
     setCurrentReasoning('');
 
@@ -510,7 +499,7 @@ export default function Home() {
       reply: { kind: 'answer', answer: option },
       config: buildChatConfig(),
       history: saved.history,
-    }, assistantMessageId);
+    }, targetId);
   };
 
   // 提交审批结果（Agent 恢复运行）
@@ -522,20 +511,14 @@ export default function Home() {
     setIsLoading(true);
     setCurrentReasoning('');
 
-    const assistantMessageId = generateId();
-    updateCurrentMessages(prev => [...prev, {
-      id: assistantMessageId,
-      role: 'assistant',
-      content: '',
-      toolCalls: [],
-      timestamp: new Date(),
-    }]);
+    // 复用暂停时的 assistant 消息
+    const targetId = saved.assistantMessageId ?? generateId();
 
     await runChatRequest({
       reply: { kind: 'approval', grant, toolCallId: saved.toolCall.id },
       config: buildChatConfig(),
       history: saved.history,
-    }, assistantMessageId);
+    }, targetId);
   };
 
   // 处理键盘事件
@@ -763,6 +746,11 @@ export default function Home() {
                             {msg.content}
                           </div>
                         )
+                      ) : msg.toolCalls && msg.toolCalls.length > 0 && msg.toolCalls.some(tc => !tc.result) ? (
+                        // 被暂停/等待恢复的消息：有工具调用但结果未回、内容未产出
+                        <div className="flex items-center gap-2 text-slate-400 text-xs">
+                          <span>⏸ 已暂停，等待你的操作...</span>
+                        </div>
                       ) : (
                         <div className="flex items-center gap-2 text-slate-400">
                           <div className="flex gap-1">
