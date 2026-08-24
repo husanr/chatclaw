@@ -51,6 +51,17 @@ const toolNameMap: Record<string, string> = {
   code_executor: '代码执行',
   file_operations: '文件操作',
   api_caller: 'API 调用',
+  knowledge_search: '知识库',
+  app_config: '应用配置',
+  image_generator: '图片生成',
+  get_time: '获取时间',
+  webpage_fetch: '网页抓取',
+  memory: '记忆',
+  reload_tool: '工具热加载',
+  shell_executor: 'Shell 执行',
+  background_task: '后台任务',
+  subagent: '子 Agent',
+  ask_user: '提问用户',
 };
 
 // 工具图标
@@ -60,6 +71,17 @@ const toolIconMap: Record<string, string> = {
   code_executor: '💻',
   file_operations: '📁',
   api_caller: '🌐',
+  knowledge_search: '📚',
+  app_config: '⚙️',
+  image_generator: '🎨',
+  get_time: '🕐',
+  webpage_fetch: '📄',
+  memory: '🧠',
+  reload_tool: '🧩',
+  shell_executor: '🖥️',
+  background_task: '⏱️',
+  subagent: '🤖',
+  ask_user: '❓',
 };
 
 export default function Home() {
@@ -71,6 +93,21 @@ export default function Home() {
   const [currentThinking, setCurrentThinking] = useState('');
   const [currentReasoning, setCurrentReasoning] = useState('');
   const [currentToolCall, setCurrentToolCall] = useState<ToolCallInfo | null>(null);
+  // Agent 暂停等待用户输入（ask_user 提问）
+  const [pendingQuestion, setPendingQuestion] = useState<{
+    requestId: string;
+    question: string;
+    options?: string[];
+    history: any[];
+  } | null>(null);
+  const [questionInput, setQuestionInput] = useState('');
+  // Agent 暂停等待审批（shell 等工具）
+  const [pendingApproval, setPendingApproval] = useState<{
+    requestId: string;
+    toolCall: ToolCallInfo;
+    toolDescription: string;
+    history: any[];
+  } | null>(null);
   const [model, setModel] = useState('openai-gpt-4o');
   const [apiConfig, setApiConfig] = useState({ baseURL: '', apiKey: '' });
   const [maxIterations, setMaxIterations] = useState(() => {
@@ -193,65 +230,13 @@ export default function Home() {
   // 生成唯一 ID
   const generateId = () => Math.random().toString(36).substring(2, 15);
 
-  // 发送消息
-  const sendMessage = async () => {
-    if (!input.trim() || isLoading) return;
-
-    // 确保有当前会话
-    if (!currentConvId) {
-      newConversation();
-      return;
-    }
-
-    const userMessage: Message = {
-      id: generateId(),
-      role: 'user',
-      content: input.trim(),
-      timestamp: new Date(),
-    };
-
-    updateCurrentMessages(prev => [...prev, userMessage]);
-    setInput('');
-    setIsLoading(true);
-    setCurrentThinking('');
-    setCurrentReasoning('');
-    setCurrentToolCall(null);
-
-    const assistantMessageId = generateId();
-    const assistantMessage: Message = {
-      id: assistantMessageId,
-      role: 'assistant',
-      content: '',
-      toolCalls: [],
-      timestamp: new Date(),
-    };
-
-    const currentHistory = [...messages];
-
-    updateCurrentMessages(prev => [...prev, assistantMessage]);
-
+  // 发起聊天请求并处理 SSE 流（普通消息 / ask_user 回答 / 审批，共用一套流式解析）
+  const runChatRequest = async (body: any, assistantMessageId: string) => {
     try {
-      // 调用 API，带上完整对话历史
       const response = await fetch('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          message: userMessage.content,
-          config: {
-            model,
-            baseURL: apiConfig.baseURL,
-            apiKey: apiConfig.apiKey,
-            allowedDir: workspaceDir,
-            maxIterations,
-            embeddingApiKey: localStorage.getItem('ai-agent-embedding-key') || undefined,
-            embeddingBaseURL: localStorage.getItem('ai-agent-embedding-url') || undefined,
-            embeddingModel: localStorage.getItem('ai-agent-embedding-model') || undefined,
-          },
-          history: currentHistory.map(m => ({
-            role: m.role,
-            content: m.content,
-          })),
-        }),
+        body: JSON.stringify(body),
       });
 
       if (!response.ok) {
@@ -330,6 +315,36 @@ export default function Home() {
                   ));
                   break;
 
+                case 'user_input_required':
+                  // Agent 暂停提问：保存问题 + 完整消息快照，等待用户回答
+                  setPendingQuestion({
+                    requestId: data.requestId,
+                    question: data.question,
+                    options: data.options,
+                    history: data.history || [],
+                  });
+                  setIsLoading(false);
+                  setCurrentThinking('');
+                  setCurrentToolCall(null);
+                  break;
+
+                case 'approval_required':
+                  // Agent 暂停请求审批：保存待审批工具 + 完整消息快照
+                  setPendingApproval({
+                    requestId: data.requestId,
+                    toolCall: {
+                      id: data.toolCall.id,
+                      name: data.toolCall.name,
+                      args: data.toolCall.args,
+                    },
+                    toolDescription: data.toolDescription,
+                    history: data.history || [],
+                  });
+                  setIsLoading(false);
+                  setCurrentThinking('');
+                  setCurrentToolCall(null);
+                  break;
+
                 case 'done':
                   updateCurrentMessages(prev => prev.map(m =>
                     m.id === assistantMessageId
@@ -365,6 +380,162 @@ export default function Home() {
       setCurrentThinking('');
       setCurrentToolCall(null);
     }
+  };
+
+  // 构造聊天请求的公共配置（模型/凭据/工作目录等）
+  const buildChatConfig = () => ({
+    model,
+    baseURL: apiConfig.baseURL,
+    apiKey: apiConfig.apiKey,
+    allowedDir: workspaceDir,
+    maxIterations,
+    embeddingApiKey: localStorage.getItem('ai-agent-embedding-key') || undefined,
+    embeddingBaseURL: localStorage.getItem('ai-agent-embedding-url') || undefined,
+    embeddingModel: localStorage.getItem('ai-agent-embedding-model') || undefined,
+  });
+
+  // 发送消息
+  const sendMessage = async () => {
+    if (!input.trim() || isLoading || pendingQuestion || pendingApproval) return;
+
+    // 确保有当前会话
+    if (!currentConvId) {
+      newConversation();
+      return;
+    }
+
+    const userMessage: Message = {
+      id: generateId(),
+      role: 'user',
+      content: input.trim(),
+      timestamp: new Date(),
+    };
+
+    updateCurrentMessages(prev => [...prev, userMessage]);
+    setInput('');
+    setIsLoading(true);
+    setCurrentThinking('');
+    setCurrentReasoning('');
+    setCurrentToolCall(null);
+
+    const assistantMessageId = generateId();
+    const assistantMessage: Message = {
+      id: assistantMessageId,
+      role: 'assistant',
+      content: '',
+      toolCalls: [],
+      timestamp: new Date(),
+    };
+
+    const currentHistory = [...messages];
+
+    updateCurrentMessages(prev => [...prev, assistantMessage]);
+
+    await runChatRequest({
+      message: userMessage.content,
+      config: buildChatConfig(),
+      history: currentHistory.map(m => ({
+        role: m.role,
+        content: m.content,
+      })),
+    }, assistantMessageId);
+  };
+
+  // 提交对 ask_user 的回答（Agent 恢复运行）
+  const submitAnswer = async () => {
+    const answer = questionInput.trim();
+    if (!answer || !pendingQuestion || isLoading) return;
+
+    // 把回答显示为一条用户消息
+    const userMessage: Message = {
+      id: generateId(),
+      role: 'user',
+      content: answer,
+      timestamp: new Date(),
+    };
+    updateCurrentMessages(prev => [...prev, userMessage]);
+
+    // 新建 assistant 消息继续接收流式输出
+    const assistantMessageId = generateId();
+    updateCurrentMessages(prev => [...prev, {
+      id: assistantMessageId,
+      role: 'assistant',
+      content: '',
+      toolCalls: [],
+      timestamp: new Date(),
+    }]);
+
+    const saved = pendingQuestion;
+    setPendingQuestion(null);
+    setQuestionInput('');
+    setIsLoading(true);
+    setCurrentReasoning('');
+
+    await runChatRequest({
+      reply: { kind: 'answer', answer },
+      config: buildChatConfig(),
+      history: saved.history,
+    }, assistantMessageId);
+  };
+
+  // 点击选项快捷回答
+  const submitAnswerOption = async (option: string) => {
+    if (!pendingQuestion || isLoading) return;
+    setQuestionInput(option);
+    // 等 state 更新后立即提交
+    const userMessage: Message = {
+      id: generateId(),
+      role: 'user',
+      content: option,
+      timestamp: new Date(),
+    };
+    updateCurrentMessages(prev => [...prev, userMessage]);
+
+    const assistantMessageId = generateId();
+    updateCurrentMessages(prev => [...prev, {
+      id: assistantMessageId,
+      role: 'assistant',
+      content: '',
+      toolCalls: [],
+      timestamp: new Date(),
+    }]);
+
+    const saved = pendingQuestion;
+    setPendingQuestion(null);
+    setQuestionInput('');
+    setIsLoading(true);
+    setCurrentReasoning('');
+
+    await runChatRequest({
+      reply: { kind: 'answer', answer: option },
+      config: buildChatConfig(),
+      history: saved.history,
+    }, assistantMessageId);
+  };
+
+  // 提交审批结果（Agent 恢复运行）
+  const submitApproval = async (grant: boolean) => {
+    if (!pendingApproval || isLoading) return;
+
+    const saved = pendingApproval;
+    setPendingApproval(null);
+    setIsLoading(true);
+    setCurrentReasoning('');
+
+    const assistantMessageId = generateId();
+    updateCurrentMessages(prev => [...prev, {
+      id: assistantMessageId,
+      role: 'assistant',
+      content: '',
+      toolCalls: [],
+      timestamp: new Date(),
+    }]);
+
+    await runChatRequest({
+      reply: { kind: 'approval', grant, toolCallId: saved.toolCall.id },
+      config: buildChatConfig(),
+      history: saved.history,
+    }, assistantMessageId);
   };
 
   // 处理键盘事件
@@ -664,6 +835,90 @@ export default function Home() {
           )}
 
           <div ref={messagesEndRef} />
+
+          {/* Agent 提问卡片（ask_user 暂停等待回答） */}
+          {pendingQuestion && (
+            <div className="flex justify-start px-4">
+              <div className="w-full max-w-[80%] bg-white dark:bg-slate-800 border border-purple-200 dark:border-purple-700 rounded-2xl p-4 shadow-sm">
+                <div className="text-sm font-medium text-purple-600 dark:text-purple-400 mb-2">
+                  ❓ Agent 需要向你确认
+                </div>
+                <div className="text-sm text-slate-700 dark:text-slate-200 mb-3 whitespace-pre-wrap">
+                  {pendingQuestion.question}
+                </div>
+                {pendingQuestion.options && pendingQuestion.options.length > 0 && (
+                  <div className="flex flex-wrap gap-2 mb-3">
+                    {pendingQuestion.options.map(opt => (
+                      <button
+                        key={opt}
+                        onClick={() => submitAnswerOption(opt)}
+                        className="px-3 py-1.5 rounded-full bg-purple-50 dark:bg-purple-900/30 text-purple-700 dark:text-purple-300 text-xs hover:bg-purple-100 dark:hover:bg-purple-900/50 transition-colors"
+                      >
+                        {opt}
+                      </button>
+                    ))}
+                  </div>
+                )}
+                <div className="flex gap-2">
+                  <input
+                    value={questionInput}
+                    onChange={e => setQuestionInput(e.target.value)}
+                    onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); submitAnswer(); } }}
+                    placeholder="输入你的回答..."
+                    className="flex-1 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 px-3 py-2 text-sm text-slate-800 dark:text-white focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent"
+                    disabled={isLoading}
+                    autoFocus
+                  />
+                  <button
+                    onClick={submitAnswer}
+                    disabled={isLoading || !questionInput.trim()}
+                    className="px-4 py-2 rounded-lg bg-purple-500 text-white text-sm hover:bg-purple-600 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                  >
+                    回答
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Agent 审批卡片（shell 等工具暂停等待授权） */}
+          {pendingApproval && (
+            <div className="flex justify-start px-4">
+              <div className="w-full max-w-[80%] bg-white dark:bg-slate-800 border border-amber-200 dark:border-amber-700 rounded-2xl p-4 shadow-sm">
+                <div className="text-sm font-medium text-amber-600 dark:text-amber-400 mb-2">
+                  🛂 请求授权执行
+                </div>
+                <div className="text-sm text-slate-700 dark:text-slate-200 mb-2">
+                  <span className="font-medium">
+                    {toolIconMap[pendingApproval.toolCall.name] || '🔧'}{' '}
+                    {toolNameMap[pendingApproval.toolCall.name] || pendingApproval.toolCall.name}
+                  </span>
+                </div>
+                <pre className="text-xs bg-slate-100 dark:bg-slate-900 rounded-lg p-2 mb-1 overflow-x-auto whitespace-pre-wrap text-slate-600 dark:text-slate-300">
+                  {JSON.stringify(pendingApproval.toolCall.args, null, 2)}
+                </pre>
+                <div className="text-xs text-slate-400 mb-3">
+                  {pendingApproval.toolDescription}
+                </div>
+                <div className="flex gap-2">
+                  <button
+                    onClick={() => submitApproval(true)}
+                    disabled={isLoading}
+                    className="px-4 py-2 rounded-lg bg-emerald-500 text-white text-sm hover:bg-emerald-600 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                  >
+                    ✓ 批准执行
+                  </button>
+                  <button
+                    onClick={() => submitApproval(false)}
+                    disabled={isLoading}
+                    className="px-4 py-2 rounded-lg bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-slate-200 text-sm hover:bg-slate-300 dark:hover:bg-slate-600 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                  >
+                    ✕ 拒绝
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
         </div>
 
         {/* 输入框 */}
@@ -701,7 +956,7 @@ export default function Home() {
               </button>
             </div>
             <div className="mt-2 text-xs text-slate-400 text-center">
-              chatClaw · 基于 ReAct 模式 · 支持知识库 + 6 种工具
+              chatClaw · 基于 ReAct 模式 · 16 种工具 · Shell 授权执行 · 后台任务 · 子 Agent 委派
             </div>
           </div>
         </div>

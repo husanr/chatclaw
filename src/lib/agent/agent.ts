@@ -21,7 +21,7 @@
 //
 // ============================================
 
-import { Message, ToolCall, AgentConfig, LLMProvider, Tool, ToolResult } from '@/types';
+import { Message, ToolCall, AgentConfig, LLMProvider, Tool, ToolResult, AgentRunResult } from '@/types';
 import { toolRegistry } from '../tools/base';
 
 // 校验工具参数：对照工具定义的 parameters（properties + required）做必填和类型检查
@@ -62,6 +62,17 @@ export class Agent {
   private config: AgentConfig;
   private messages: Message[] = [];
 
+  // 流式回调缓存：暂停（审批/提问）后恢复时继续推送事件
+  private callbacks: {
+    onThinking?: (thought: string) => void;
+    onToolCall?: (toolCall: ToolCall) => void;
+    onToolResult?: (result: any) => void;
+    onToken?: (token: string) => void;
+    onReasoning?: (reasoning: string) => void;
+  } = {};
+
+  private requestSeq = 0;
+
   constructor(llm: LLMProvider, config: AgentConfig, history?: Message[]) {
     this.llm = llm;
     this.config = config;
@@ -91,8 +102,8 @@ export class Agent {
 - knowledge_search: 搜索本地知识库（用户上传的文档）
 - web_search: 搜索网页获取最新信息
 - calculator: 执行数学计算
-- code_executor: 执行 JavaScript 代码
-- file_operations: 文件读写操作
+- code_executor: 执行 JavaScript 代码（沙箱）
+- file_operations: 文件操作（读写/列表/edit 编辑/grep 搜索/glob 匹配）
 - api_caller: 调用外部 API
 - app_config: 读取/修改应用配置（如图片 API 地址），改完立即生效
 - image_generator: 根据描述生成图片，返回图片 URL
@@ -100,11 +111,19 @@ export class Agent {
 - webpage_fetch: 抓取网页完整文本
 - memory: 长期记忆，跨会话记住/回忆信息
 - reload_tool: 动态加载/卸载工具，扩展自身能力
+- shell_executor: 在用户授权的工作目录执行真实 Shell 命令（npm/git/python 等，执行前需用户审批）
+- background_task: 后台任务管理（start/status/list/stop/result），长耗时命令用这个，不阻塞对话
+- subagent: 委派子任务给独立子 Agent 并行执行（prompt 必须自包含）
+- ask_user: 向用户提问澄清（意图不明、方案选择、关键参数缺失时用，不要瞎猜）
 
 ## 重要规则（必须遵守）
 1. **先查知识库，再搜网页**：当用户提问时，必须先用 knowledge_search 搜索本地知识库。只有当知识库没有相关内容时，才用 web_search。
 2. 如果用户上传了文档，回答问题时务必先搜索知识库，基于文档内容回答。
 3. 只有涉及实时信息（新闻、天气、股价等）或知识库确实找不到答案时，才用 web_search。
+4. **长任务必须用 background_task**：npm install、构建、批量处理等耗时操作，启动后台任务后轮询 status，不要用 shell_executor 同步等待。
+5. **涉及真实 Shell 操作**（安装依赖、运行项目、git 操作等）用 shell_executor，命令执行前会请用户确认，等待确认时不要重复发起相同命令。
+6. **意图不明确就问**：任务有歧义、多方案需要用户决策、缺少关键信息时，用 ask_user 提问澄清，不要擅自假设。
+7. **复杂任务可拆解**：多个独立子任务可用 subagent 并行委派，然后汇总结果。
 
 ## 工作流程（ReAct 模式）
 1. 仔细分析用户的请求（Reasoning - 思考）
@@ -136,15 +155,101 @@ export class Agent {
     onToolResult?: (result: any) => void,
     onToken?: (token: string) => void,
     onReasoning?: (reasoning: string) => void,
-  ): Promise<string> {
+  ): Promise<AgentRunResult> {
+    // 缓存回调：暂停（审批/提问）后 resume 时继续推送
+    this.callbacks = { onThinking, onToolCall, onToolResult, onToken, onReasoning };
+
     // 添加用户消息
     this.messages.push({ role: 'user', content: userMessage });
+
+    return this.continueLoop();
+  }
+
+  // 恢复：用户回答了 ask_user 的提问
+  // 通过历史消息重建 Agent 后也能调用（history 里包含 assistant toolCalls 但缺 tool result）
+  async resumeWithAnswer(answer: string): Promise<AgentRunResult> {
+    const tc = this.findPendingToolCall();
+    if (!tc) {
+      return { status: 'complete', content: '（无法恢复：没有找到待回答的问题）' };
+    }
+
+    const result: ToolResult = {
+      success: true,
+      data: { answer },
+    };
+    this.callbacks.onToolResult?.(result);
+    this.messages.push({
+      role: 'tool',
+      toolCallId: tc.id,
+      name: tc.name,
+      content: JSON.stringify(result),
+    });
+    return this.continueLoop();
+  }
+
+  // 恢复：用户审批（或拒绝）了待执行的工具
+  async resumeWithApproval(granted: boolean, toolCallId?: string): Promise<AgentRunResult> {
+    const tc = this.findPendingToolCall(toolCallId);
+    if (!tc) {
+      return { status: 'complete', content: '（无法恢复：没有找到待审批的工具调用）' };
+    }
+
+    if (granted) {
+      const result = await toolRegistry.execute(tc.name, tc.args);
+      this.callbacks.onToolResult?.(result);
+      this.messages.push({
+        role: 'tool',
+        toolCallId: tc.id,
+        name: tc.name,
+        content: JSON.stringify(result),
+      });
+    } else {
+      const denied: ToolResult = { success: false, error: '用户拒绝了本次工具调用，请调整方案或直接回答用户' };
+      this.callbacks.onToolResult?.(denied);
+      this.messages.push({
+        role: 'tool',
+        toolCallId: tc.id,
+        name: tc.name,
+        content: JSON.stringify(denied),
+      });
+    }
+    return this.continueLoop();
+  }
+
+  // 从消息历史中找出「最后一个未被消费的工具调用」
+  // 规则：逆序找第一条 assistant 消息的最后一个 toolCall（该调用还没有对应的 tool 结果消息）
+  private findPendingToolCall(toolCallId?: string): ToolCall | null {
+    if (toolCallId) {
+      for (let i = this.messages.length - 1; i >= 0; i--) {
+        const m = this.messages[i];
+        if (m.toolCalls) {
+          const found = m.toolCalls.find((t) => t.id === toolCallId);
+          if (found) return found;
+        }
+      }
+      return null;
+    }
+    for (let i = this.messages.length - 1; i >= 0; i--) {
+      const m = this.messages[i];
+      if (m.role === 'assistant' && m.toolCalls && m.toolCalls.length > 0) {
+        return m.toolCalls[m.toolCalls.length - 1];
+      }
+    }
+    return null;
+  }
+
+  // ReAct 主循环（run / resume 共用）
+  private async continueLoop(): Promise<AgentRunResult> {
+    const { onThinking, onToolCall, onToolResult, onToken, onReasoning } = this.callbacks;
 
     // 获取启用的工具
     const enabledTools = toolRegistry.getEnabledDefinitions(this.config.tools);
 
     // ReAct 循环
     for (let iteration = 0; iteration < this.config.maxIterations; iteration++) {
+      // 每轮开始前先做上下文管理：压缩超限的旧对话（任何轮次都生效，包括纯对话轮）
+      await this.compressContext();
+
       console.log(`\n🔄 Agent 循环 #${iteration + 1}`);
 
       // 每一轮都用流式：边收 token 边推送前端
@@ -183,7 +288,7 @@ export class Agent {
           reasoningContent,
         });
         console.log('✅ Agent 任务完成');
-        return content || '';
+        return { status: 'complete', content: content || '' };
       }
 
       // 有工具调用 → 执行
@@ -198,9 +303,21 @@ export class Agent {
         console.log(`🔧 调用工具: ${tc.name}`);
         onToolCall?.(tc);
 
+        const tool = toolRegistry.get(tc.name);
+
+        // 【权限门】需要用户审批的工具（如 shell_executor）：暂停循环，等用户确认
+        if (tool?.requiresApproval) {
+          console.log(`🛂 工具 ${tc.name} 需要用户审批`);
+          return {
+            status: 'awaiting_approval',
+            requestId: `req_${++this.requestSeq}`,
+            toolCall: tc,
+            toolDescription: tool.definition.description,
+          };
+        }
+
         // 先校验参数：不合法则不执行，把错误回填给 LLM 让它自我纠错重试
         let result: ToolResult;
-        const tool = toolRegistry.get(tc.name);
         const validation = tool ? validateToolArgs(tool, tc.args) : { valid: false, errors: [`工具不存在: ${tc.name}`] };
 
         if (!validation.valid) {
@@ -209,6 +326,18 @@ export class Agent {
           result = { success: false, error: errorMsg };
         } else {
           result = await toolRegistry.execute(tc.name, tc.args);
+        }
+
+        // 【提问门】工具请求用户输入（ask_user）：暂停循环，把问题推给前端
+        if (result?.needsInput) {
+          console.log(`❓ 工具 ${tc.name} 请求用户输入`);
+          return {
+            status: 'awaiting_input',
+            requestId: `req_${++this.requestSeq}`,
+            question: result.needsInput.question,
+            options: result.needsInput.options,
+            pendingToolCall: tc,
+          };
         }
 
         onToolResult?.(result);
@@ -220,16 +349,72 @@ export class Agent {
           content: JSON.stringify(result),
         });
       }
-
-      // 每轮后做上下文封顶，防止长任务超模型窗口
-      this.trimContext();
     }
 
     console.log('⚠️ 达到最大迭代次数');
-    return '抱歉，任务未能在规定步骤内完成。请尝试简化您的请求。';
+    return { status: 'complete', content: '抱歉，任务未能在规定步骤内完成。请尝试简化您的请求。' };
   }
 
-  // 上下文封顶：超过 maxContextMessages 时，从中间裁剪最旧的完整 tool_call/tool_result 对。
+  // 上下文管理：超过 maxContextMessages 时，优先用 LLM 摘要压缩最旧的对话，
+  // 失败或关闭压缩时退回「从中间裁剪最旧工具对」。
+  private async compressContext(): Promise<void> {
+    const max = this.config.maxContextMessages ?? 30;
+    if (this.messages.length <= max) return;
+
+    // 显式关闭压缩：退回直接裁剪
+    if (this.config.compressContext === false) {
+      this.trimContext();
+      return;
+    }
+
+    try {
+      // 一次压缩到上限内：保留最近 (max-2) 条 + 1 条摘要占位
+      // 如 27 条 / max=8 → 压缩前 21 条为摘要，保留 6 条最近消息
+      const compressEnd = Math.max(4, this.messages.length - max + 2);
+      const compressible = this.messages.slice(1, compressEnd);
+      if (compressible.length < 4) {
+        this.trimContext();
+        return;
+      }
+
+      // 摘要输入：tool 角色消息转成 user（避免 API 因 tool 消息无对应 tool_call 而报错）
+      const summaryInput: Message[] = [
+        {
+          role: 'system',
+          content:
+            '把以下对话历史压缩成简洁的中文摘要。请保留：用户的核心需求、已确认的事实、关键工具执行结果要点、未完成的任务。不要编造不存在的信息，输出纯摘要文本，不要任何解释。',
+        },
+        ...compressible.map((m): Message => {
+          if (m.role === 'tool') {
+            return { role: 'user', content: `[工具 ${m.name ?? '?'} 的结果] ${m.content ?? ''}` };
+          }
+          return { role: m.role as 'user' | 'assistant', content: m.content ?? '' };
+        }),
+      ];
+
+      const summary = await this.llm.chat(summaryInput);
+
+      if (!summary || !summary.trim()) {
+        this.trimContext();
+        return;
+      }
+
+      this.messages = [
+        this.messages[0],
+        {
+          role: 'system',
+          content: `【历史对话摘要】\n${summary.trim().slice(0, 2000)}\n\n（以上为之前对话的自动压缩摘要，回答问题时可以参考其中已确认的信息）`,
+        },
+        ...this.messages.slice(compressible.length + 1),
+      ];
+      console.log(`🧠 上下文已压缩：${compressible.length} 条消息 → 摘要（当前 ${this.messages.length} 条）`);
+    } catch (error) {
+      console.warn('⚠️ 摘要压缩失败，退回直接裁剪:', error instanceof Error ? error.message : error);
+      this.trimContext();
+    }
+  }
+
+  // 上下文封顶（兜底）：超过 maxContextMessages 时，从中间裁剪最旧的完整 tool_call/tool_result 对。
   // 绝不删 system 提示词和最近消息，绝不拆散 tool_call/tool_result 配对。
   private trimContext(): void {
     const max = this.config.maxContextMessages ?? 30;

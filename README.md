@@ -22,7 +22,12 @@
 | Feature | Description |
 |---|---|
 | 🤖 Multi-Model Support | OpenAI / Claude / DeepSeek / Moonshot / Qwen / Zhipu / Doubao / ERNIE / Spark |
-| 🛠️ 12 Built-in Tools | web_search / code_executor / file_operations / webpage_fetch / api_caller / image_generator / calculator / get_time / memory / knowledge_search / app_config / reload_tool (hot-pluggable) |
+| 🛠️ 16 Built-in Tools | web_search / code_executor / file_operations / shell_executor / background_task / subagent / webpage_fetch / api_caller / image_generator / calculator / get_time / memory / knowledge_search / ask_user / app_config / reload_tool (hot-pluggable) |
+| 🛂 Safe Shell Execution | Real bash via shell_executor (cwd-locked, dangerous-command blacklist, user approval required before every run) |
+| ⏱️ Background Tasks | Long-running commands (npm install / builds) run in background: start / status / list / stop / result |
+| 🤝 Sub-agent Delegation | subagent spawns an independent ReAct agent with its own loop & tools — parallel task decomposition |
+| ❓ Clarify Instead of Guess | ask_user pauses the agent to ask the user when intent is ambiguous; shell tools pause for approval |
+| 🧠 Auto Context Compression | Long conversations get LLM-summarized instead of hard-truncated (fallback to trim when disabled) |
 | ⚡ Full Streaming | SSE real-time push for thinking process, tool calls, and final answer |
 | 📚 RAG Knowledge Base | Upload docs → chunk → embed → vector search, agent prioritizes knowledge base |
 | 🔒 Code Sandbox | vm.createContext isolation, keyword blacklist + timeout control |
@@ -101,20 +106,26 @@ Select a model on the left sidebar, enter your API Key, and start chatting.
 
 ### Tool Calling
 
-Agent automatically decides when to use tools. 12 tools built in, plus hot-pluggable loading:
+Agent automatically decides when to use tools. 16 tools built in, plus hot-pluggable loading:
 
 - **web_search** — Search the web for latest info (Tavily API)
 - **webpage_fetch** — Fetch a webpage and extract readable text
 - **code_executor** — Execute JavaScript in a secure sandbox
-- **file_operations** — Read/write/list files in the workspace
+- **file_operations** — Read/write/edit with string replace, grep full-text search, glob file matching
+- **shell_executor** — Real bash in the user workspace (⛔ approval required, dangerous commands hard-blocked)
+- **background_task** — Run long commands in background: start / status / list / stop / result
+- **subagent** — Delegate a self-contained subtask to an independent Agent (parallel decomposition)
 - **api_caller** — Call external HTTP APIs (GET/POST/PUT/DELETE)
 - **image_generator** — Generate images from text prompts (reuses chat credentials)
 - **calculator** — Math calculations (arithmetic, powers, trigonometry)
 - **get_time** — Get current date & time (Beijing time)
 - **memory** — Long-term memory: store / recall / list / forget facts across sessions
 - **knowledge_search** — Search the local RAG knowledge base
+- **ask_user** — Pause and ask the user when intent is ambiguous or a decision is needed
 - **app_config** — Read/modify runtime config (e.g. image model settings, takes effect immediately)
 - **reload_tool** — Dynamically register/unregister tools at runtime so the agent can extend itself
+
+> **Approval flow**: `shell_executor` and `background_task(start)` pause the ReAct loop and push an `approval_required` SSE event — the UI shows an approve/reject card. The agent resumes with your decision via the `reply` protocol.
 
 ## 🏗️ Project Structure
 
@@ -149,7 +160,13 @@ chatclaw/
 │   │   ├── config.ts              # Runtime config (app_config tool)
 │   │   └── tools/
 │   │       ├── base.ts            # Tool registry
-│   │       └── index.ts           # 12 tool implementations
+│   │       ├── index.ts           # 16 tool implementations
+│   │       ├── shell.ts           # shell_executor（授权执行）
+│   │       ├── jobs.ts            # background_task 后台任务
+│   │       ├── subagent.ts        # subagent 子 Agent 委派
+│   │       ├── askUser.ts         # ask_user 提问澄清
+│   │       ├── security.ts        # 危险命令黑名单
+│   │       └── context.ts         # 共享运行时上下文（工作目录/凭据）
 │   └── types/
 │       └── index.ts               # Type definitions
 └── package.json

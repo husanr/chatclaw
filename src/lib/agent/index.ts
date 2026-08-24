@@ -95,6 +95,10 @@ export const defaultConfig: AgentConfig = {
     'webpage_fetch',
     'memory',
     'reload_tool',
+    'shell_executor',
+    'background_task',
+    'subagent',
+    'ask_user',
   ],
 };
 

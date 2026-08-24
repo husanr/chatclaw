@@ -44,13 +44,37 @@ export interface ToolResult {
   success: boolean;
   data?: any;
   error?: string;
+  // 工具需要向用户提问才能继续（如 ask_user），Agent 检测到后会暂停并请求用户输入
+  needsInput?: {
+    question: string;
+    options?: string[];
+  };
 }
 
 // 工具接口 - 每个工具都要实现
 export interface Tool {
   definition: ToolDefinition;           // 工具定义（给 LLM 看）
   execute: (args: Record<string, any>) => Promise<ToolResult>; // 执行函数
+  /** 是否需要用户审批后才执行（如 shell 命令）。Agent 会暂停并请求前端展示审批卡片 */
+  requiresApproval?: boolean;
 }
+
+// Agent 运行结果：正常完成 / 等待用户输入 / 等待审批
+export type AgentRunResult =
+  | { status: 'complete'; content: string }
+  | {
+      status: 'awaiting_input';
+      requestId: string;
+      question: string;
+      options?: string[];
+      pendingToolCall: ToolCall;
+    }
+  | {
+      status: 'awaiting_approval';
+      requestId: string;
+      toolCall: ToolCall;
+      toolDescription: string;
+    };
 
 // 流式工具调用事件
 export type ChatStreamEvent =
@@ -91,5 +115,6 @@ export interface AgentConfig {
   maxIterations: number;      // 最大循环次数（防止死循环）
   temperature: number;        // 创造性参数 0-1
   tools: string[];            // 启用的工具列表
-  maxContextMessages?: number; // 上下文消息数上限（超过则裁剪最旧工具对，默认 30）
+  maxContextMessages?: number; // 上下文消息数上限（超过则压缩/裁剪最旧消息，默认 30）
+  compressContext?: boolean;    // 是否用 LLM 摘要压缩旧上下文（默认 true；false 则退回直接裁剪）
 }

@@ -22,7 +22,12 @@
 | 功能 | 描述 |
 |---|---|
 | 🤖 多模型支持 | OpenAI / Claude / DeepSeek / Moonshot / 通义千问 / 智谱 / 豆包 / 文心 / 星火 |
-| 🛠️ 12 个内置工具 | web_search / code_executor / file_operations / webpage_fetch / api_caller / image_generator / calculator / get_time / memory / knowledge_search / app_config / reload_tool（支持热插拔） |
+| 🛠️ 16 个内置工具 | web_search / code_executor / file_operations / shell_executor / background_task / subagent / webpage_fetch / api_caller / image_generator / calculator / get_time / memory / knowledge_search / ask_user / app_config / reload_tool（支持热插拔） |
+| 🛂 安全的 Shell 执行 | shell_executor 真实 bash：工作目录锁定 + 危险命令黑名单 + 每次执行前需用户审批 |
+| ⏱️ 后台任务 | npm install / 构建等长耗时命令后台运行：start / status / list / stop / result，不阻塞对话 |
+| 🤝 子 Agent 委派 | subagent 创建独立 ReAct 子 Agent（独立循环和工具），复杂任务分而治之、并行拆解 |
+| ❓ 提问澄清而非瞎猜 | 意图不明时 ask_user 暂停并向用户提问；Shell 类工具暂停等待审批 |
+| 🧠 上下文自动压缩 | 长对话用 LLM 摘要压缩旧内容（而非硬裁剪），可关闭退回裁剪模式 |
 | ⚡ 全链路流式 | SSE 实时推送思考过程、工具调用、最终回答 |
 | 📚 RAG 知识库 | 上传文档 → 分块 → Embedding → 向量检索，Agent 优先查知识库 |
 | 🔒 代码沙箱 | vm.createContext 隔离执行，关键字黑名单 + 超时控制 |
@@ -101,20 +106,26 @@ npm run dev
 
 ### 工具调用
 
-Agent 会自动判断是否需要调用工具。内置 12 个工具，且支持热插拔动态加载：
+Agent 会自动判断是否需要调用工具。内置 16 个工具，且支持热插拔动态加载：
 
 - **web_search** — 搜索网页获取最新信息（Tavily API）
 - **webpage_fetch** — 抓取网页并提取可读文本（去除 HTML 标签）
 - **code_executor** — 在安全沙箱中执行 JavaScript 代码
-- **file_operations** — 读写 / 列出工作目录下的文件
+- **file_operations** — 读写 / 列表 / edit 字符串编辑 / grep 全文搜索 / glob 模式匹配
+- **shell_executor** — 在用户授权的工作目录执行真实 Shell 命令（⛔ 每次执行前需用户审批，危险命令硬阻断）
+- **background_task** — 后台任务：start / status / list / stop / result，长耗时命令不阻塞对话
+- **subagent** — 委派自包含子任务给独立子 Agent 执行（分而治之、并行拆解）
 - **api_caller** — 调用外部 HTTP API（GET/POST/PUT/DELETE）
 - **image_generator** — 根据文字描述生成图片（默认复用对话模型凭据）
 - **calculator** — 数学计算（加减乘除、幂运算、三角函数等）
 - **get_time** — 获取当前日期时间（北京时间）
 - **memory** — 长期记忆：跨会话存储 / 回忆 / 列出 / 删除事实
 - **knowledge_search** — 搜索本地 RAG 知识库
+- **ask_user** — 意图不明确 / 需要决策时，暂停并向用户提问澄清
 - **app_config** — 读取 / 修改运行时配置（如图生模型设置，改完立即生效）
 - **reload_tool** — 运行时动态注册 / 卸载工具，让 Agent 能自我扩展能力
+
+> **审批流程**：`shell_executor` 和 `background_task(start)` 会暂停 ReAct 循环，推送 `approval_required` SSE 事件——前端展示批准/拒绝卡片，你的决定通过 `reply` 协议回传后 Agent 继续执行。
 
 ## 🏗️ 项目结构
 
@@ -149,7 +160,13 @@ chatclaw/
 │   │   ├── config.ts              # 运行时配置（app_config 工具）
 │   │   └── tools/
 │   │       ├── base.ts            # 工具注册表
-│   │       └── index.ts           # 12 个工具实现
+│   │       ├── index.ts           # 16 个工具实现
+│   │       ├── shell.ts           # shell_executor（授权执行）
+│   │       ├── jobs.ts            # background_task 后台任务
+│   │       ├── subagent.ts        # subagent 子 Agent 委派
+│   │       ├── askUser.ts         # ask_user 提问澄清
+│   │       ├── security.ts        # 危险命令黑名单
+│   │       └── context.ts         # 共享运行时上下文（工作目录/凭据）
 │   └── types/
 │       └── index.ts               # 类型定义
 └── package.json

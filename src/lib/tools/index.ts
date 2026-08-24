@@ -19,23 +19,14 @@ import fs from 'fs/promises';
 import path from 'path';
 import { getConfigAll, getConfig, setConfig } from '../config';
 import { storeMemory, listMemory, recallMemory, forgetMemory } from '../memory';
+import { setAllowedDir, getAllowedDir, setChatCredentials, getChatCredentials } from './context';
+import { shellExecutorTool } from './shell';
+import { backgroundTaskTool } from './jobs';
+import { subagentTool } from './subagent';
+import { askUserTool } from './askUser';
 
-// 允许的文件目录（由前端传入，运行时设置）
-let allowedDir = '/tmp';
-
-export function setAllowedDir(dir: string) {
-  allowedDir = dir;
-}
-
-export function getAllowedDir(): string {
-  return allowedDir;
-}
-
-// 当前对话使用的 API 凭据（由 chat route 设置），供图片生成等工具默认复用
-let chatCredentials = { apiKey: '', baseURL: '' };
-export function setChatCredentials(c: { apiKey: string; baseURL: string }) {
-  chatCredentials = { apiKey: c.apiKey, baseURL: c.baseURL };
-}
+// 重新导出运行上下文（保持既有 import 路径兼容：route.ts 从 '@/lib/tools' 导入）
+export { setAllowedDir, getAllowedDir, setChatCredentials, getChatCredentials };
 
 // ============================================
 // 1. 网页搜索工具
@@ -250,25 +241,98 @@ export const codeExecutorTool: Tool = {
 // ============================================
 // 4. 文件操作工具
 // ============================================
+const SKIP_DIRS = new Set(['node_modules', '.git', '.next', '.vercel', 'dist', 'build', 'coverage', '.hermes']);
+const TEXT_EXTS = new Set(['.txt', '.md', '.js', '.jsx', '.ts', '.tsx', '.json', '.css', '.html', '.vue', '.py', '.yml', '.yaml', '.go', '.rs', '.java', '.c', '.cpp', '.h', '.sh', '.example']);
+
+// 递归收集目录下所有文件（跳过大目录）
+async function collectAllFiles(dir: string): Promise<string[]> {
+  const out: string[] = [];
+  let entries;
+  try {
+    entries = await fs.readdir(dir, { withFileTypes: true });
+  } catch {
+    return out;
+  }
+  for (const e of entries) {
+    const full = path.join(dir, e.name);
+    if (e.isDirectory()) {
+      if (SKIP_DIRS.has(e.name)) continue;
+      out.push(...(await collectAllFiles(full)));
+    } else if (e.isFile()) {
+      out.push(full);
+    }
+  }
+  return out;
+}
+
+// 只保留文本类文件（grep 用）
+async function collectTextFiles(dir: string): Promise<string[]> {
+  const all = await collectAllFiles(dir);
+  return all.filter((f) => {
+    const ext = path.extname(f).toLowerCase();
+    return TEXT_EXTS.has(ext) || /^\.env/.test(path.basename(f));
+  });
+}
+
+// 正则构造：非法正则时降级为字面量匹配
+function safeRegex(pattern: string): RegExp {
+  try {
+    return new RegExp(pattern, 'm');
+  } catch {
+    return new RegExp(pattern.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'm');
+  }
+}
+
+// glob 转正则：支持 **、*、?
+function globToRegExp(glob: string): RegExp {
+  const escaped = glob
+    .replace(/[.+^${}()|[\]\\]/g, '\\$&')
+    .replace(/\*\*/g, '\u0000')
+    .replace(/\*/g, '[^/]*')
+    .replace(/\?/g, '[^/]')
+    .replace(/\u0000/g, '.*');
+  return new RegExp(`^${escaped}$`);
+}
+
 export const fileOperationsTool: Tool = {
   definition: {
     name: 'file_operations',
-    description: '读写文件。可以读取文件内容、写入文件或列出目录内容。',
+    description: '文件操作。read(读取)、write(写入)、list(列目录)、edit(字符串替换编辑，oldString→newString，可 replaceAll)、grep(正则全文搜索，返回 文件:行号:内容)、glob(按模式匹配文件，如 src/**/*.ts)。',
     parameters: {
       type: 'object',
       properties: {
         action: {
           type: 'string',
-          enum: ['read', 'write', 'list'],
-          description: '操作类型: read(读取), write(写入), list(列出目录)',
+          enum: ['read', 'write', 'list', 'edit', 'grep', 'glob'],
+          description: '操作类型: read(读取), write(写入), list(列出目录), edit(替换编辑), grep(文本搜索), glob(匹配文件)',
         },
         path: {
           type: 'string',
-          description: '文件路径',
+          description: '文件或目录路径',
         },
         content: {
           type: 'string',
           description: '写入的内容（仅 write 操作需要）',
+        },
+        oldString: {
+          type: 'string',
+          description: 'edit: 要被替换的旧文本',
+        },
+        newString: {
+          type: 'string',
+          description: 'edit: 替换后的新文本',
+        },
+        replaceAll: {
+          type: 'boolean',
+          description: 'edit: 替换所有匹配（默认只替换第一处）',
+        },
+        pattern: {
+          type: 'string',
+          description: 'grep: 搜索的正则表达式或关键词；glob: 文件匹配模式',
+        },
+        maxResults: {
+          type: 'number',
+          description: 'grep/glob: 最多返回结果数（默认 50 / 100）',
         },
       },
       required: ['action', 'path'],
@@ -280,7 +344,7 @@ export const fileOperationsTool: Tool = {
     try {
       // 安全限制：只能操作用户指定的工作目录
       const resolved = path.resolve(filePath);
-      const resolvedAllowed = path.resolve(allowedDir);
+      const resolvedAllowed = path.resolve(getAllowedDir());
       if (!resolved.startsWith(resolvedAllowed + '/') && resolved !== resolvedAllowed) {
         return { success: false, error: `安全限制：只能读写 ${resolvedAllowed} 目录下的文件` };
       }
@@ -303,6 +367,70 @@ export const fileOperationsTool: Tool = {
             type: e.isDirectory() ? 'directory' : 'file',
           }));
           return { success: true, data: { path: resolved, entries: list } };
+        }
+        case 'edit': {
+          const oldString = String(args.oldString ?? '');
+          const newString = String(args.newString ?? '');
+          if (!oldString) return { success: false, error: 'edit 操作需要 oldString 参数' };
+          const raw = await fs.readFile(resolved, 'utf-8');
+          if (!raw.includes(oldString)) {
+            return { success: false, error: `未在文件中找到要替换的文本: "${oldString.slice(0, 80)}"（edit 要求精确匹配，可先 read 确认内容）` };
+          }
+          const count = args.replaceAll ? raw.split(oldString).length - 1 : 1;
+          const updated = args.replaceAll
+            ? raw.split(oldString).join(newString)
+            : raw.replace(oldString, newString);
+          await fs.writeFile(resolved, updated, 'utf-8');
+          return {
+            success: true,
+            data: {
+              path: resolved,
+              message: `已替换 ${count} 处`,
+              preview: updated.slice(0, 500),
+            },
+          };
+        }
+        case 'grep': {
+          const pattern = String(args.pattern ?? '');
+          if (!pattern) return { success: false, error: 'grep 操作需要 pattern 参数' };
+          const maxResults = Math.min(Number(args.maxResults) || 50, 200);
+          const isDir = (await fs.stat(resolved)).isDirectory();
+          const root = isDir ? resolved : path.dirname(resolved);
+          const files = await collectTextFiles(root);
+          const regex = safeRegex(pattern);
+          const matches: { file: string; line: number; text: string }[] = [];
+          for (const f of files) {
+            if (matches.length >= maxResults) break;
+            try {
+              const lines = (await fs.readFile(f, 'utf-8')).split('\n');
+              for (let i = 0; i < lines.length; i++) {
+                if (regex.test(lines[i])) {
+                  matches.push({
+                    file: path.relative(root, f),
+                    line: i + 1,
+                    text: lines[i].trim().slice(0, 200),
+                  });
+                  if (matches.length >= maxResults) break;
+                }
+              }
+            } catch {
+              // 二进制/不可读文件跳过
+            }
+          }
+          return { success: true, data: { pattern, matches, total: matches.length } };
+        }
+        case 'glob': {
+          const pattern = String(args.pattern || path.basename(resolved));
+          const isDir = (await fs.stat(resolved)).isDirectory();
+          const root = isDir ? resolved : path.dirname(resolved);
+          const maxResults = Math.min(Number(args.maxResults) || 100, 500);
+          const rx = globToRegExp(pattern);
+          const files = await collectAllFiles(root);
+          const matched = files
+            .map((f) => path.relative(root, f))
+            .filter((rel) => rx.test(rel))
+            .slice(0, maxResults);
+          return { success: true, data: { pattern, files: matched, total: matched.length } };
         }
         default:
           return { success: false, error: `不支持的操作: ${action}` };
@@ -394,8 +522,9 @@ export const imageGeneratorTool: Tool = {
     const { prompt, size } = args;
     try {
       // 优先用 app_config 覆盖值，否则默认复用当前对话凭据
-      const baseURL = String(await getConfig('imageBaseURL') || '').trim() || chatCredentials.baseURL;
-      const apiKey = String(await getConfig('imageApiKey') || '').trim() || chatCredentials.apiKey;
+      const creds = getChatCredentials();
+      const baseURL = String(await getConfig('imageBaseURL') || '').trim() || creds.baseURL;
+      const apiKey = String(await getConfig('imageApiKey') || '').trim() || creds.apiKey;
       const model = String(await getConfig('imageModel') || '').trim() || 'dall-e-3';
 
       if (!baseURL) {
@@ -695,6 +824,11 @@ export function registerAllTools(): void {
   toolRegistry.register(webpageFetchTool);
   toolRegistry.register(memoryTool);
   toolRegistry.register(reloadTool);
+  // v1 新增：真实 shell / 后台任务 / 子 Agent 委派 / 用户提问
+  toolRegistry.register(shellExecutorTool);
+  toolRegistry.register(backgroundTaskTool);
+  toolRegistry.register(subagentTool);
+  toolRegistry.register(askUserTool);
 }
 
 // ============================================
