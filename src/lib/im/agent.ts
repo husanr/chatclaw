@@ -51,6 +51,16 @@ function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
 /** 处理一条 IM 消息：更新会话 → 跑 Agent → 返回最终回答文本 */
 export async function runImAgent(channel: string, userId: string, text: string): Promise<string> {
   return withUserLock(channel, userId, async () => {
+    // 白名单检查（参考 Hermes 的 dmPolicy=allowlist 模式）：
+    // IM_ALLOWLIST=逗号分隔的 open_id / user_id，不配置 = 允许所有用户
+    const allowlist = (process.env.IM_ALLOWLIST || '')
+      .split(',')
+      .map(s => s.trim())
+      .filter(Boolean);
+    if (allowlist.length > 0 && !allowlist.includes(userId)) {
+      return '🔒 抱歉，此机器人仅对授权用户开放。';
+    }
+
     // 内置命令
     const trimmed = text.trim();
     if (trimmed === '/reset' || trimmed === '重置会话' || trimmed === '清空上下文') {
