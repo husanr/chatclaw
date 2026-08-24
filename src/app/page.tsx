@@ -233,7 +233,12 @@ export default function Home() {
   const generateId = () => Math.random().toString(36).substring(2, 15);
 
   // 发起聊天请求并处理 SSE 流（普通消息 / ask_user 回答 / 审批，共用一套流式解析）
-  const runChatRequest = async (body: any, assistantMessageId: string) => {
+  const runChatRequest = async (body: any, assistantMessageId: string, separateOnFirstToken = false) => {
+    // 轮次分隔：tool_result 之后的下一批 token 是新一轮回答，前面加空行，
+    // 避免"分析-执行-总结"的中间回答被拼接成一大段
+    let roundSeparator = separateOnFirstToken;
+    let firstToken = true;
+
     try {
       const response = await fetch('/api/chat', {
         method: 'POST',
@@ -294,6 +299,8 @@ export default function Home() {
 
                 case 'tool_result':
                   setCurrentToolCall(null);
+                  // 该轮工具执行完，下一批 token 属于新一轮回答，需要加分隔
+                  roundSeparator = true;
 
                   // 更新最后一个工具调用的结果
                   updateCurrentMessages(prev => prev.map(m => {
@@ -312,9 +319,17 @@ export default function Home() {
                 case 'token':
                   updateCurrentMessages(prev => prev.map(m =>
                     m.id === assistantMessageId
-                      ? { ...m, content: m.content + data.content }
+                      ? {
+                          ...m,
+                          content:
+                            m.content +
+                            (m.content && roundSeparator ? '\n\n' : '') +
+                            data.content,
+                        }
                       : m
                   ));
+                  roundSeparator = false;
+                  firstToken = false;
                   break;
 
                 case 'user_input_required':
@@ -350,9 +365,11 @@ export default function Home() {
                   break;
 
                 case 'done':
+                  // 绝不覆盖累积的中间回答（每轮文本已通过 token 流式累积）；
+                  // 仅当内容为空（纯工具流程）时用最终回答补齐
                   updateCurrentMessages(prev => prev.map(m =>
                     m.id === assistantMessageId
-                      ? { ...m, content: data.content }
+                      ? { ...m, content: m.content || data.content || '' }
                       : m
                   ));
                   setCurrentThinking('');
@@ -471,7 +488,7 @@ export default function Home() {
       reply: { kind: 'answer', answer },
       config: buildChatConfig(),
       history: saved.history,
-    }, targetId);
+    }, targetId, true);
   };
 
   // 点击选项快捷回答
@@ -499,7 +516,7 @@ export default function Home() {
       reply: { kind: 'answer', answer: option },
       config: buildChatConfig(),
       history: saved.history,
-    }, targetId);
+    }, targetId, true);
   };
 
   // 提交审批结果（Agent 恢复运行）
@@ -518,7 +535,7 @@ export default function Home() {
       reply: { kind: 'approval', grant, toolCallId: saved.toolCall.id },
       config: buildChatConfig(),
       history: saved.history,
-    }, targetId);
+    }, targetId, true);
   };
 
   // 处理键盘事件
