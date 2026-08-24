@@ -92,6 +92,45 @@ npm run dev
 3. 配置环境变量 `TAVILY_API_KEY`
 4. 点击 Deploy
 
+## 🤖 IM 机器人接入（飞书 / Telegram）
+
+在**飞书**或 **Telegram** 里直接跟 chatClaw 对话。机器人通过 Webhook 接收消息，后台运行 Agent，处理完通过 IM 开放 API 回复：
+
+```
+用户 → IM 服务器 → POST Webhook → /api/im/feishu（或 /api/im/telegram）
+                            → 立即返回 200（防 3 秒超时重试）
+                            → Agent 后台处理（ReAct + 工具）
+                            → 调 IM API 把回答发回去
+```
+
+> **架构要点**：Webhook 立即 200、异步处理——Agent 可能要跑几十秒，同步等待会触发 IM 服务器的重试超时。会话按「渠道+用户」存在服务端（`data/im-sessions.json`），发 `/reset` 可清空上下文。IM 模式启用 13 个无交互工具（shell/后台任务/提问需要审批界面，已排除）。模型凭据从 `IM_AGENT_MODEL` / `IM_AGENT_API_KEY` / `IM_AGENT_BASE_URL` 或模型自身 envKey 读取（无需前端填 Key）。
+
+### 飞书接入步骤
+
+1. 在 [open.feishu.cn](https://open.feishu.cn) 创建**企业自建应用**
+2. 添加「机器人」能力（添加应用能力 → 机器人）
+3. 「权限管理」里添加 `im:message`（读取与发送消息）
+4. 「事件订阅」里把请求地址填为 `https://<你的公网地址>/api/im/feishu`——飞书会用 challenge 验证地址
+5. 添加事件 **im.message.receive_v1**，然后**发布版本**
+6. 环境变量填 `FEISHU_APP_ID` 和 `FEISHU_APP_SECRET`（在「凭证与基础信息」拿）
+
+### Telegram 接入步骤
+
+1. 找 [@BotFather](https://t.me/BotFather) → `/newbot` 创建机器人拿 token
+2. 注册 Webhook：
+   ```bash
+   curl "https://api.telegram.org/bot<TOKEN>/setWebhook?url=https://<你的公网地址>/api/im/telegram"
+   ```
+3. 环境变量填 `TELEGRAM_BOT_TOKEN`
+
+### 公网要求
+
+Webhook 必须公网 HTTPS 可达：
+
+- **本地开发**：[cloudflared](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/) 隧道（`cloudflared tunnel --url http://localhost:3000`）或 ngrok
+- **自托管 / 云服务器**：`next start` 部署 + nginx/caddy 反代
+- ⚠️ **Vercel Hobby 注意**：Serverless 函数响应后可能被冻结，异步回复会丢消息，IM 机器人建议自托管
+
 ## 📖 使用说明
 
 ### 对话

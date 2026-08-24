@@ -92,6 +92,45 @@ Visit [http://localhost:3000](http://localhost:3000) 🎉
 3. Set environment variable `TAVILY_API_KEY`
 4. Deploy
 
+## 🤖 IM Bot Integration (Feishu / Telegram)
+
+Chat with chatClaw from **Feishu (Lark)** or **Telegram**. The bot receives messages via webhook, runs the Agent in the background, and replies through the IM API.
+
+```
+User → IM server → POST webhook → /api/im/feishu (or /api/im/telegram)
+                              → 200 immediately (≤3s timeout safety)
+                              → Agent processes (ReAct + tools)
+                              → IM API sends the answer back
+```
+
+> **Architecture notes**: webhooks respond `200` instantly and process asynchronously — Agent runs can take tens of seconds, which would trip the IM server's retry timeout. Sessions are stored server-side (`data/im-sessions.json`) per channel+user; `send /reset` clears a conversation. IM mode uses the 13 non-interactive tools (shell/background/ask_user need approval UI, so they're excluded); model credentials come from `IM_AGENT_MODEL` / `IM_AGENT_API_KEY` / `IM_AGENT_BASE_URL` or the model's own `envKey`.
+
+### Feishu setup
+
+1. Create an app at [open.feishu.cn](https://open.feishu.cn) → **Enterprise self-built app**
+2. Enable **Bot** capability (添加应用能力 → 机器人)
+3. In **Permission management**, add `im:message` (read & send messages)
+4. In **Event subscription**, set request URL to `https://<your-public-url>/api/im/feishu` — Feishu will verify it with a `challenge`
+5. Add event **im.message.receive_v1**, then **Publish** a version (发布版本)
+6. Set env vars: `FEISHU_APP_ID`, `FEISHU_APP_SECRET` (from 凭证与基础信息)
+
+### Telegram setup
+
+1. Message [@BotFather](https://t.me/BotFather) → `/newbot` → get your token
+2. Register the webhook:
+   ```bash
+   curl "https://api.telegram.org/bot<TOKEN>/setWebhook?url=https://<your-public-url>/api/im/telegram"
+   ```
+3. Set `TELEGRAM_BOT_TOKEN`
+
+### Public URL requirements
+
+The webhook URL must be publicly reachable over HTTPS. Options:
+
+- **Local dev**: [cloudflared tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/) (`cloudflared tunnel --url http://localhost:3000`) or ngrok
+- **Self-hosted / VPS**: deploy with `next start` behind nginx/caddy
+- ⚠️ **Vercel Hobby caveat**: serverless functions may freeze after responding — the async reply pattern can drop messages. Prefer self-hosting for IM bots.
+
 ## 📖 Usage
 
 ### Chat
