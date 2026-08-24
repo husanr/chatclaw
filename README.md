@@ -21,8 +21,8 @@
 
 | Feature | Description |
 |---|---|
-| 🤖 Multi-Model Support | OpenAI / Claude / DeepSeek / Qwen / Zhipu / Doubao |
-| 🔧 Tool Calling | web_search / code_executor / file_operations / api_caller / calculator / knowledge_search |
+| 🤖 Multi-Model Support | OpenAI / Claude / DeepSeek / Moonshot / Qwen / Zhipu / Doubao / ERNIE / Spark |
+| 🛠️ 12 Built-in Tools | web_search / code_executor / file_operations / webpage_fetch / api_caller / image_generator / calculator / get_time / memory / knowledge_search / app_config / reload_tool (hot-pluggable) |
 | ⚡ Full Streaming | SSE real-time push for thinking process, tool calls, and final answer |
 | 📚 RAG Knowledge Base | Upload docs → chunk → embed → vector search, agent prioritizes knowledge base |
 | 🔒 Code Sandbox | vm.createContext isolation, keyword blacklist + timeout control |
@@ -56,7 +56,7 @@ npm install
 ### 3. Configure
 
 ```bash
-cp .env.example .env.local
+cp .env.local.example .env.local
 ```
 
 Edit `.env.local` with your API key:
@@ -101,14 +101,20 @@ Select a model on the left sidebar, enter your API Key, and start chatting.
 
 ### Tool Calling
 
-Agent automatically decides when to use tools:
+Agent automatically decides when to use tools. 12 tools built in, plus hot-pluggable loading:
 
-- **web_search** — Search the web for latest info
-- **code_executor** — Execute JavaScript in sandbox
-- **file_operations** — Read/write files in workspace
-- **api_caller** — Call external APIs
-- **calculator** — Math calculations
-- **knowledge_search** — Search local knowledge base
+- **web_search** — Search the web for latest info (Tavily API)
+- **webpage_fetch** — Fetch a webpage and extract readable text
+- **code_executor** — Execute JavaScript in a secure sandbox
+- **file_operations** — Read/write/list files in the workspace
+- **api_caller** — Call external HTTP APIs (GET/POST/PUT/DELETE)
+- **image_generator** — Generate images from text prompts (reuses chat credentials)
+- **calculator** — Math calculations (arithmetic, powers, trigonometry)
+- **get_time** — Get current date & time (Beijing time)
+- **memory** — Long-term memory: store / recall / list / forget facts across sessions
+- **knowledge_search** — Search the local RAG knowledge base
+- **app_config** — Read/modify runtime config (e.g. image model settings, takes effect immediately)
+- **reload_tool** — Dynamically register/unregister tools at runtime so the agent can extend itself
 
 ## 🏗️ Project Structure
 
@@ -117,27 +123,33 @@ chatclaw/
 ├── src/
 │   ├── app/
 │   │   ├── api/
-│   │   │   ├── chat/route.ts      # Chat API
+│   │   │   ├── chat/route.ts      # Chat API (SSE streaming)
 │   │   │   └── rag/route.ts       # RAG Knowledge Base API
 │   │   ├── page.tsx               # Main page
-│   │   └── layout.tsx             # Layout
+│   │   ├── layout.tsx             # Layout
+│   │   └── globals.css            # Global styles
 │   ├── components/
 │   │   ├── ModelSelector.tsx      # Model selector
-│   │   └── KnowledgePanel.tsx     # Knowledge base panel
+│   │   ├── KnowledgePanel.tsx     # Knowledge base panel
+│   │   └── MarkdownMessage.tsx    # Markdown message renderer
 │   ├── lib/
 │   │   ├── agent/
 │   │   │   ├── agent.ts           # Agent core (ReAct loop)
 │   │   │   └── index.ts           # Agent factory
 │   │   ├── llm/
+│   │   │   ├── index.ts           # LLM provider exports
 │   │   │   ├── openai.ts          # OpenAI Provider
 │   │   │   ├── claude.ts          # Claude Provider
 │   │   │   ├── custom.ts          # Custom Provider
+│   │   │   ├── retry.ts           # Exponential-backoff retry
 │   │   │   └── models.ts          # Model configs
 │   │   ├── rag/
 │   │   │   └── index.ts           # RAG core (Embedding + vector search)
+│   │   ├── memory.ts              # Long-term memory store
+│   │   ├── config.ts              # Runtime config (app_config tool)
 │   │   └── tools/
 │   │       ├── base.ts            # Tool registry
-│   │       └── index.ts           # Tool implementations
+│   │       └── index.ts           # 12 tool implementations
 │   └── types/
 │       └── index.ts               # Type definitions
 └── package.json

@@ -21,8 +21,8 @@
 
 | 功能 | 描述 |
 |---|---|
-| 🤖 多模型支持 | OpenAI / Claude / DeepSeek / 通义千问 / 智谱 / 豆包 |
-| 🔧 工具调用 | web_search / code_executor / file_operations / api_caller / calculator / knowledge_search |
+| 🤖 多模型支持 | OpenAI / Claude / DeepSeek / Moonshot / 通义千问 / 智谱 / 豆包 / 文心 / 星火 |
+| 🛠️ 12 个内置工具 | web_search / code_executor / file_operations / webpage_fetch / api_caller / image_generator / calculator / get_time / memory / knowledge_search / app_config / reload_tool（支持热插拔） |
 | ⚡ 全链路流式 | SSE 实时推送思考过程、工具调用、最终回答 |
 | 📚 RAG 知识库 | 上传文档 → 分块 → Embedding → 向量检索，Agent 优先查知识库 |
 | 🔒 代码沙箱 | vm.createContext 隔离执行，关键字黑名单 + 超时控制 |
@@ -56,7 +56,7 @@ npm install
 ### 3. 配置环境变量
 
 ```bash
-cp .env.example .env.local
+cp .env.local.example .env.local
 ```
 
 编辑 `.env.local`，填入你的 API Key：
@@ -101,14 +101,20 @@ npm run dev
 
 ### 工具调用
 
-Agent 会自动判断是否需要调用工具：
+Agent 会自动判断是否需要调用工具。内置 12 个工具，且支持热插拔动态加载：
 
-- **web_search** — 搜索网页获取最新信息
-- **code_executor** — 在沙箱中执行 JavaScript 代码
-- **file_operations** — 读写指定工作目录的文件
-- **api_caller** — 调用外部 API
-- **calculator** — 数学计算
-- **knowledge_search** — 搜索本地知识库
+- **web_search** — 搜索网页获取最新信息（Tavily API）
+- **webpage_fetch** — 抓取网页并提取可读文本（去除 HTML 标签）
+- **code_executor** — 在安全沙箱中执行 JavaScript 代码
+- **file_operations** — 读写 / 列出工作目录下的文件
+- **api_caller** — 调用外部 HTTP API（GET/POST/PUT/DELETE）
+- **image_generator** — 根据文字描述生成图片（默认复用对话模型凭据）
+- **calculator** — 数学计算（加减乘除、幂运算、三角函数等）
+- **get_time** — 获取当前日期时间（北京时间）
+- **memory** — 长期记忆：跨会话存储 / 回忆 / 列出 / 删除事实
+- **knowledge_search** — 搜索本地 RAG 知识库
+- **app_config** — 读取 / 修改运行时配置（如图生模型设置，改完立即生效）
+- **reload_tool** — 运行时动态注册 / 卸载工具，让 Agent 能自我扩展能力
 
 ## 🏗️ 项目结构
 
@@ -117,27 +123,33 @@ chatclaw/
 ├── src/
 │   ├── app/
 │   │   ├── api/
-│   │   │   ├── chat/route.ts      # 对话 API
+│   │   │   ├── chat/route.ts      # 对话 API（SSE 流式）
 │   │   │   └── rag/route.ts       # RAG 知识库 API
 │   │   ├── page.tsx               # 主页面
-│   │   └── layout.tsx             # 布局
+│   │   ├── layout.tsx             # 布局
+│   │   └── globals.css            # 全局样式
 │   ├── components/
 │   │   ├── ModelSelector.tsx      # 模型选择器
-│   │   └── KnowledgePanel.tsx     # 知识库面板
+│   │   ├── KnowledgePanel.tsx     # 知识库面板
+│   │   └── MarkdownMessage.tsx    # Markdown 消息渲染
 │   ├── lib/
 │   │   ├── agent/
 │   │   │   ├── agent.ts           # Agent 核心（ReAct 循环）
 │   │   │   └── index.ts           # Agent 工厂
 │   │   ├── llm/
+│   │   │   ├── index.ts           # LLM Provider 出口
 │   │   │   ├── openai.ts          # OpenAI Provider
 │   │   │   ├── claude.ts          # Claude Provider
 │   │   │   ├── custom.ts          # 自定义 Provider
+│   │   │   ├── retry.ts           # 指数退避重试
 │   │   │   └── models.ts          # 模型配置
 │   │   ├── rag/
 │   │   │   └── index.ts           # RAG 核心（Embedding + 向量检索）
+│   │   ├── memory.ts              # 长期记忆存储
+│   │   ├── config.ts              # 运行时配置（app_config 工具）
 │   │   └── tools/
 │   │       ├── base.ts            # 工具注册表
-│   │       └── index.ts           # 工具实现
+│   │       └── index.ts           # 12 个工具实现
 │   └── types/
 │       └── index.ts               # 类型定义
 └── package.json
