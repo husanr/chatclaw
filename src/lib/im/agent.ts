@@ -14,7 +14,8 @@
 // ============================================
 
 import type { AgentConfig, AgentRunResult } from '@/types';
-import { createAgent } from '../agent';
+import { Agent } from '../agent/agent';
+import { CustomLLMProvider } from '../llm/custom';
 import { getModelById } from '../llm/models';
 import { getSession, saveSession, resetSession, withUserLock } from './session';
 
@@ -57,17 +58,20 @@ export async function runImAgent(channel: string, userId: string, text: string):
       return '✅ 会话已重置，之前的对话历史已清空。';
     }
 
-    // 模型与凭据（环境变量）
+    // 模型与凭据（环境变量；models.ts 里没有的模型 ID 也支持——用 env 直连构造）
     const modelId = process.env.IM_AGENT_MODEL || DEFAULT_MODEL;
     const modelConfig = getModelById(modelId);
-    if (!modelConfig) {
-      return `❌ 未找到模型配置: ${modelId}（在 .env.local 用 IM_AGENT_MODEL 指定正确的模型 ID）`;
-    }
-    const apiKey = process.env.IM_AGENT_API_KEY || process.env[modelConfig.envKey] || '';
+    const apiKey =
+      process.env.IM_AGENT_API_KEY ||
+      (modelConfig?.envKey ? process.env[modelConfig.envKey] || '' : '') ||
+      '';
+    const baseURL = process.env.IM_AGENT_BASE_URL || modelConfig?.baseURL || '';
     if (!apiKey) {
-      return `❌ 服务端未配置 ${modelConfig.envKey}（或 IM_AGENT_API_KEY）。请在 .env.local 填入后再试。`;
+      return `❌ 服务端未配置模型 API Key（IM_AGENT_API_KEY，或 ${modelConfig?.envKey ?? '对应模型的 envKey'}）。请在 .env.local 填入后再试。`;
     }
-    const baseURL = process.env.IM_AGENT_BASE_URL || modelConfig.baseURL;
+    if (!baseURL) {
+      return `❌ 未找到模型 ${modelId} 的 API 地址：请配置 IM_AGENT_BASE_URL，或使用 models.ts 中已定义的模型 ID。`;
+    }
 
     // 恢复历史，重建 Agent（stateless）
     const session = await getSession(channel, userId);
@@ -79,7 +83,18 @@ export async function runImAgent(channel: string, userId: string, text: string):
       maxContextMessages: 20,
       compressContext: true,
     };
-    const agent = createAgent({ ...agentConfig, apiKey, baseURL } as never, session.messages);
+    // 构造 LLM Provider：models.ts 有配置走配置；没有则按自定义模型直连（env 提供地址/Key）
+    const llm = new CustomLLMProvider({
+      name: modelConfig?.name ?? modelId,
+      provider: modelConfig?.provider ?? 'custom',
+      baseURL,
+      model: modelConfig?.model ?? modelId,
+      apiKey,
+      maxTokens: modelConfig?.maxTokens ?? 8192,
+      supportsTools: true,
+      supportsThinking: modelConfig?.supportsThinking ?? false,
+    });
+    const agent = new Agent(llm, agentConfig, session.messages);
 
     // 跑（带超时）
     let result: AgentRunResult;
