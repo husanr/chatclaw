@@ -82,6 +82,56 @@ class FeishuClient {
     }
   }
 
+  // 发送交互卡片（处理中状态），返回 message_id 供后续更新
+  async sendCard(openId: string, card: object): Promise<string> {
+    const token = await this.getTenantToken();
+    const res = await fetch(
+      `${FEISHU_BASE}/im/v1/messages?receive_id_type=open_id`,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          receive_id: openId,
+          msg_type: 'interactive',
+          content: JSON.stringify(card),
+        }),
+        signal: AbortSignal.timeout(15_000),
+      },
+    );
+    if (!res.ok) {
+      throw new Error(`发送飞书卡片失败: HTTP ${res.status}`);
+    }
+    const data = await res.json();
+    if (data.code !== 0) {
+      throw new Error(`发送飞书卡片失败: ${data.code} ${data.msg}`);
+    }
+    return data.data?.message_id as string;
+  }
+
+  // 更新已有消息为新的卡片内容（处理中 → 最终回答）
+  async updateCard(messageId: string, card: object): Promise<void> {
+    const token = await this.getTenantToken();
+    const res = await fetch(`${FEISHU_BASE}/im/v1/messages/${messageId}`, {
+      method: 'PATCH',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({ content: JSON.stringify(card) }),
+      signal: AbortSignal.timeout(15_000),
+    });
+    if (!res.ok) {
+      throw new Error(`更新飞书卡片失败: HTTP ${res.status}`);
+    }
+    const data = await res.json();
+    if (data.code !== 0) {
+      throw new Error(`更新飞书卡片失败: ${data.code} ${data.msg}`);
+    }
+  }
+
   // 长文本自动分片发送（飞书单条文本上限很高，分片主要为了可读性）
   async sendTextChunks(openId: string, text: string, chunkSize = 4000): Promise<void> {
     const clean = text.trim();
