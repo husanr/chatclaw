@@ -25,7 +25,10 @@ export async function handleFeishuMessage(
   chatId?: string,
   messageId?: string,
 ): Promise<void> {
-  console.log(`[feishu] 收到消息 openId=${openId} chatId=${chatId ?? '-'}: ${text.slice(0, 80)}`);
+  console.log(`[feishu] 收到消息 openId=${openId} chatId=${chatId ?? '-'} messageId=${messageId ?? '-'}: ${text.slice(0, 80)}`);
+
+  // Typing 指示器开关（对齐 Hermes 的 channels.feishu.typingIndicator 配置语义）
+  const typingIndicator = process.env.FEISHU_TYPING_INDICATOR !== 'false';
 
   let reactionId: string | null = null;
   let keepalive: ReturnType<typeof setInterval> | null = null;
@@ -43,7 +46,7 @@ export async function handleFeishuMessage(
 
   try {
     // 1. 添加 "正在输入" 反应（失败则降级为无占位，不阻塞主流程）
-    if (messageId) {
+    if (typingIndicator && messageId) {
       try {
         reactionId = await feishuClient.addTypingReaction(messageId);
         // 2. 保活循环：反应过期前重新添加
