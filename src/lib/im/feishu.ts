@@ -132,6 +132,45 @@ class FeishuClient {
     }
   }
 
+  // 添加 Typing 反应（飞书客户端在消息上显示"正在输入…"待回复动画）
+  // 返回 reaction_id，回复完成时用其移除
+  async addTypingReaction(messageId: string): Promise<string | null> {
+    const token = await this.getTenantToken();
+    const res = await fetch(`${FEISHU_BASE}/im/v1/messages/${messageId}/reactions`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({ reaction_type: { emoji_type: 'Typing' } }),
+      signal: AbortSignal.timeout(10_000),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || data.code !== 0) {
+      // 已存在同款反应/限流时不抛错（保活重试友好）
+      throw new Error(`添加 Typing 反应失败: ${data.code ?? res.status} ${data.msg ?? ''}`);
+    }
+    return (data.data?.reaction_id as string) ?? null;
+  }
+
+  // 移除 Typing 反应（回复完成 / 出错时）
+  async removeTypingReaction(messageId: string, reactionId?: string | null): Promise<void> {
+    if (!reactionId) return;
+    const token = await this.getTenantToken();
+    const res = await fetch(
+      `${FEISHU_BASE}/im/v1/messages/${messageId}/reactions/${reactionId}`,
+      {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${token}` },
+        signal: AbortSignal.timeout(10_000),
+      },
+    );
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || data.code !== 0) {
+      throw new Error(`移除 Typing 反应失败: ${data.code ?? res.status} ${data.msg ?? ''}`);
+    }
+  }
+
   // 长文本自动分片发送（飞书单条文本上限很高，分片主要为了可读性）
   async sendTextChunks(openId: string, text: string, chunkSize = 4000): Promise<void> {
     const clean = text.trim();

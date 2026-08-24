@@ -1,36 +1,20 @@
 // ============================================
-// 飞书 Webhook 入口
+// 飞书 Webhook 入口（备选订阅方式）
 // ============================================
 //
-// 飞书开放平台「事件订阅」会 POST 到这里：
-// 1. 首次配置时需要响应 URL 验证（challenge）
-// 2. 用户发消息 → 解析 → 立即返回 200 → 后台跑 Agent → 调飞书 API 回复
+// 主推「长连接」订阅（src/lib/im/feishu-socket.ts，无需公网 URL）。
+// 本路由保留作为备选：在飞书开放平台用 webhook 方式订阅时，
+// 事件会 POST 到这里（首次配置需通过 challenge 验证）。
 //
-// 快速 200 是关键：飞书事件推送有超时重试（3 秒），
-// Agent 处理可能很久，所以绝不能同步等待后再响应。
+// 处理逻辑与长连接完全一致（复用 feishu-events.ts）：
+// 收到消息 → Typing 反应(正在输入) → Agent 处理 → 移除反应并回复。
 // ============================================
 
 import { NextRequest, NextResponse } from 'next/server';
-import { runImAgent } from '@/lib/im/agent';
-import { feishuClient, isFeishuConfigured } from '@/lib/im/feishu';
+import { handleFeishuMessage } from '@/lib/im/feishu-events';
+import { isFeishuConfigured } from '@/lib/im/feishu';
 
 export const dynamic = 'force-dynamic';
-
-async function handleIncoming(openId: string, text: string, chatId?: string): Promise<void> {
-  console.log(`[feishu] 收到消息 openId=${openId} chatId=${chatId ?? '-'}: ${text.slice(0, 80)}`);
-  try {
-    const answer = await runImAgent('feishu', openId, text);
-    await feishuClient.sendTextChunks(openId, answer);
-    console.log(`[feishu] → 已回复（${answer.length} 字符）`);
-  } catch (e) {
-    console.error('[feishu] 处理失败:', e);
-    try {
-      await feishuClient.sendText(openId, `❌ 服务出错了: ${e instanceof Error ? e.message : String(e)}`);
-    } catch {
-      // 回复失败只能记日志
-    }
-  }
-}
 
 export async function POST(request: NextRequest) {
   let body: any;
@@ -57,28 +41,17 @@ export async function POST(request: NextRequest) {
   }
 
   const event = body.event ?? {};
-  const message = event.message ?? {};
-  const sender = event.sender ?? {};
-  const openId = sender.sender_id?.open_id as string | undefined;
-  const chatId = message.chat_id as string | undefined;
-
-  // 只处理文本消息（图片/卡片等忽略）
-  if (!openId || message.message_type !== 'text') {
-    return NextResponse.json({ ok: true });
-  }
-
-  let text = '';
-  try {
-    text = JSON.parse(message.content ?? '{}').text ?? '';
-  } catch {
-    text = String(message.content ?? '');
-  }
-  if (!text.trim()) {
-    return NextResponse.json({ ok: true });
-  }
 
   // 快速响应 + 后台异步处理（Agent 可能要跑几十秒，不能阻塞 webhook）
-  void handleIncoming(openId, text.trim(), chatId);
+  void handleFeishuEvent(event);
 
   return NextResponse.json({ ok: true });
+}
+
+/** 从 webhook 事件提取并处理（与长连接共用逻辑） */
+async function handleFeishuEvent(event: any): Promise<void> {
+  const { extractFeishuText } = await import('@/lib/im/feishu-events');
+  const parsed = extractFeishuText(event);
+  if (!parsed) return;
+  await handleFeishuMessage(parsed.openId, parsed.text, parsed.chatId, parsed.messageId);
 }

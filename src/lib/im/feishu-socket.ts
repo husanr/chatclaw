@@ -45,7 +45,7 @@ export function startFeishuLongConnection(): void {
         const parsed = extractFeishuText(event);
         if (!parsed) return;
         // 异步处理：Agent 可能跑很久，不阻塞 SDK 事件循环
-        void handleFeishuMessage(parsed.openId, parsed.text, parsed.chatId);
+        void handleFeishuMessage(parsed.openId, parsed.text, parsed.chatId, parsed.messageId);
       },
     });
 
