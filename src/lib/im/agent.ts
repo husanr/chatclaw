@@ -126,7 +126,8 @@ export async function runImAgent(channel: string, userId: string, text: string):
 
     if (result.status === 'complete') {
       // 兜底：模型可能把幻觉的工具调用以 XML 纯文本输出（飞书里无法执行），剔除后再发
-      const content = (result.content || '').trim().replace(/<invoke[\s\S]*?<\/invoke>/gi, '');
+      // 兼容闭合(<invoke>...</invoke>)和未闭合(<invoke ...> 到文本末尾)两种情况
+      const content = (result.content || '').trim().replace(/<invoke[\s\S]*?(?:<\/invoke>|$)/gi, '');
       return content.trim() || '✅ 处理完成（没有输出内容）。';
     }
     if (result.status === 'awaiting_input') {
