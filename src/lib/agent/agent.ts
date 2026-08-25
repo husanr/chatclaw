@@ -23,6 +23,7 @@
 
 import { Message, ToolCall, AgentConfig, LLMProvider, Tool, ToolResult, AgentRunResult } from '@/types';
 import { toolRegistry } from '../tools/base';
+import { parseTextToolCalls, stripToolCallXml } from '../llm/xml-strip';
 
 // 校验工具参数：对照工具定义的 parameters（properties + required）做必填和类型检查
 // 手写校验，不引入 zod——工具定义是 JSON-schema 形状，这里最贴合且零依赖
@@ -121,7 +122,7 @@ export class Agent {
       .map((name) => {
         const tool = toolRegistry.get(name);
         const desc = toolDesc[name] ?? tool?.definition.description ?? name;
-        const approval = tool?.requiresApproval ? '（执行前需用户审批）' : '';
+        const approval = tool?.requiresApproval ? '（调用时系统会请求用户授权）' : '';
         return `- ${name}: ${desc}${approval}`;
       })
       .join('\n');
@@ -130,7 +131,7 @@ export class Agent {
       extraRules.push('**长任务必须用 background_task**：npm install、构建、批量处理等耗时操作，启动后台任务后轮询 status，不要用 shell_executor 同步等待。');
     }
     if (enabledSet.has('shell_executor')) {
-      extraRules.push('**涉及真实 Shell 操作**（安装依赖、运行项目、git 操作等）用 shell_executor，命令执行前会请用户确认，等待确认时不要重复发起相同命令。');
+      extraRules.push('**涉及真实 Shell 操作**（安装依赖、运行项目、git 操作等）用 shell_executor；直接发出调用声明即可，系统会自动向用户请求授权，**不要在正文里请求用户确认**，等待授权结果即可。');
     }
     if (enabledSet.has('ask_user')) {
       extraRules.push('**意图不明确就问**：任务有歧义、多方案需要用户决策、缺少关键信息时，用 ask_user 提问澄清，不要擅自假设。');
@@ -170,7 +171,7 @@ ${ruleLines}
 - 当你已经能直接回答用户时，**立即停止调用工具，直接给出最终答案**。
 - 不要为了"完成任务"而反复调用工具，除非确实需要更多信息。
 - 如果某个工具调用失败，最多重试一次；仍失败就基于已有信息回答，不要无限重试。
-- **调用工具必须使用系统提供的工具调用接口**，禁止在回复正文里输出尖括号形式的工具调用声明（任何看起来像 XML 标签的调用写法都不允许）；工具需要审批时就等待并提示用户，不要凭空假装已经执行。
+- **调用工具优先使用系统提供的工具调用接口**；若平台工具接口不可用，只允许用唯一文本格式声明调用：<invoke name='工具名'><parameter name='参数名'>值</parameter></invoke>（每个参数一个 parameter 标签，不加引号包裹值；不要再写 tool_调用、tool_calls、JSON 标签等其他格式）。发出声明后系统会代为执行并返回结果，你**不要假装已经执行**；工具需要审批时直接发出调用声明即可，系统会向用户推送授权请求并等待用户回复，**不要在正文里请求用户确认**。
 
 现在，让我们开始帮助用户吧！`;
   }
@@ -306,6 +307,22 @@ ${ruleLines}
         reasoningContent = response.reasoningContent;
         if (reasoningContent) onReasoning?.(reasoningContent);
         if (content) onThinking?.(content);
+      }
+
+      // 没有结构化工具调用 → 尝试解析模型写的文本形式工具调用（<invoke>/<tool_调用>/JSON标签等）
+      if (toolCalls.length === 0 && content) {
+        const textCalls = parseTextToolCalls(content);
+        if (textCalls.length > 0) {
+          console.log(`🔧 文本调用解析成功: ${textCalls.map(c => c.name).join(', ')}`);
+          toolCalls = textCalls.map((c, i) => ({
+            id: `text_${Date.now().toString(36)}_${i}`,
+            name: c.name,
+            args: c.args,
+          }));
+          // 从正文清掉调用文本，避免残留渲染/污染历史
+          const cleaned = stripToolCallXml(content);
+          if (cleaned) content = cleaned;
+        }
       }
 
       // 没有工具调用 → 任务完成

@@ -31,7 +31,10 @@ export interface ImSession {
   pending?: ImPendingApproval | null;  // 挂起的审批请求（IM 审批流用）
 }
 
-const SESSION_FILE = path.join(process.cwd(), 'data', 'im-sessions.json');
+// 会话文件路径（IM_SESSION_FILE 可覆盖：多实例/自动化测试隔离用）
+const SESSION_FILE = process.env.IM_SESSION_FILE
+  ? path.resolve(process.env.IM_SESSION_FILE)
+  : path.join(process.cwd(), 'data', 'im-sessions.json');
 
 const sessions = new Map<string, ImSession>();
 let loaded = false;

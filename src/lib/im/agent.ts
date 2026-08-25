@@ -21,6 +21,12 @@ import { CustomLLMProvider } from '../llm/custom';
 import { getModelById } from '../llm/models';
 import { getSession, saveSession, resetSession, withUserLock, type ImPendingApproval } from './session';
 import { stripToolCallXml, hasToolCallXml } from '../llm/xml-strip';
+import { registerAllTools } from '../tools/index';
+
+// ⚠️ IM 进程必须显式注册工具：全局注册表只被 Web 的 agent/index.ts 副作用填充，
+// 冷启动/独立进程（E2E 也算）里是空的——不注册则所有工具报"工具不存在"、审批门永不触发。
+// registerAllTools 幂等（同名覆盖），与 Web 同时加载也无副作用。
+registerAllTools();
 
 // IM 场景可用工具：含审批类（shell_executor / background_task 会暂停等用户批准），ask_user 不开放
 const IM_TOOLS = [
@@ -193,6 +199,10 @@ export async function runImAgent(channel: string, userId: string, text: string):
       session.messages = agent.getMessages().slice(-MAX_HISTORY_MESSAGES);
       session.pending = toPending(result, session.pending ?? null);
       await saveSession(session);
+      // 新触发的审批：直接返回带描述/编号的授权请求（别走 formatResult 的兜底文案）
+      if (result.status === 'awaiting_approval' && session.pending) {
+        return buildApprovalPrompt(session.pending);
+      }
       return formatResult(result);
     } catch (e) {
       await saveSession(session);
