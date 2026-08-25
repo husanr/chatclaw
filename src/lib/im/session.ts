@@ -14,11 +14,21 @@ import fs from 'fs/promises';
 import path from 'path';
 import type { Message } from '@/types';
 
+export interface ImPendingApproval {
+  kind: 'approval';
+  requestId: string;
+  toolName: string;
+  toolArgs: Record<string, any>;
+  toolDescription: string;
+  createdAt: number;
+}
+
 export interface ImSession {
   userId: string;
   channel: string;
   messages: Message[];   // 完整对话历史（含 toolCalls 等结构化字段）
   updatedAt: number;
+  pending?: ImPendingApproval | null;  // 挂起的审批请求（IM 审批流用）
 }
 
 const SESSION_FILE = path.join(process.cwd(), 'data', 'im-sessions.json');
