@@ -20,6 +20,7 @@ import { Agent } from '../agent/agent';
 import { CustomLLMProvider } from '../llm/custom';
 import { getModelById } from '../llm/models';
 import { getSession, saveSession, resetSession, withUserLock, type ImPendingApproval } from './session';
+import { stripToolCallXml, hasToolCallXml } from '../llm/xml-strip';
 
 // IM 场景可用工具：含审批类（shell_executor / background_task 会暂停等用户批准），ask_user 不开放
 const IM_TOOLS = [
@@ -122,29 +123,22 @@ function buildAgent(modelId: string, history: Message[]): { agent: Agent; agentC
 /** 统一的结果格式化（complete 走 XML 兜底剔除） */
 function formatResult(result: AgentRunResult): string {
     if (result.status === 'complete') {
-      // 兜底：模型可能把幻觉的工具调用以 XML 纯文本输出（飞书里无法执行），剔除后再发
-      // 覆盖 <tool_calls><invoke>...</invoke></tool_calls> 整块、残留 wrapper/parameter 标签（正则用单反斜杠）
+      // 兜底：模型可能把幻觉的工具调用以 XML 文本输出（飞书里无法执行），剔除后再发
       const before = result.content || '';
-      const content = before
-        .trim()
-        .replace(/<tool_calls>[\s\S]*?<\/tool_calls>|<invoke[\s\S]*?(?:<\/invoke>|$)/gi, '')
-        .replace(/<\/?tool_calls>/gi, '')
-        .replace(/<parameter[^>]*>[\s\S]*?<\/parameter>|<parameter[^>]*>/gi, '')
-        .replace(/<invoke[^>]*>|<\/invoke>/gi, '')
-        .trim();
-      if (content !== (before || '').trim()) {
+      const content = stripToolCallXml(before);
+      if (hasToolCallXml(before)) {
         console.log('[feishu] ⚠️ 已剔除回复中的工具调用XML残留');
       }
-      return content.trim() || '✅ 处理完成（没有输出内容）。';
+      return content || '✅ 处理完成（没有输出内容）。';
     }
-  if (result.status === 'awaiting_input') {
-    return `🤔 我需要先确认一下：\n${result.question}`;
-  }
-  if (result.status === 'awaiting_approval') {
-    // 理论上到不了这里（上游已转 pending 处理），防御性降级
-    return '🛂 工具调用需要审批，请稍后重试。';
-  }
-  return '❌ 未知状态';
+    if (result.status === 'awaiting_input') {
+      return `🤔 我需要先确认一下：\n${result.question}`;
+    }
+    if (result.status === 'awaiting_approval') {
+      // 理论上到不了这里（上游已转 pending 处理），防御性降级
+      return '🛂 工具调用需要审批，请稍后重试。';
+    }
+    return '❌ 未知状态';
 }
 
 /** 处理一条 IM 消息：更新会话 → 跑 Agent → 返回最终回答文本 */

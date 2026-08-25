@@ -16,6 +16,7 @@
 import OpenAI from 'openai';
 import { Message, ToolDefinition, ToolCall, LLMProvider } from '@/types';
 import { withRetry } from './retry';
+import { stripToolCallXml } from './xml-strip';
 
 // 自定义模型配置
 export interface CustomModelConfig {
@@ -83,7 +84,8 @@ export class CustomLLMProvider implements LLMProvider {
       messages: messages.map(m => {
         const msg: any = {
           role: m.role,
-          content: m.content,
+          // 发给模型的 assistant 历史先清洗 XML 残留，防止模型模仿垃圾格式
+          content: m.role === 'assistant' ? stripToolCallXml(m.content ?? '') : m.content,
         };
 
         // 如果有工具调用，添加到消息中
@@ -273,7 +275,8 @@ export class CustomLLMProvider implements LLMProvider {
 
     // 构建请求消息（和 chatWithTools 一样处理 tool call / tool result / reasoning）
     const requestMessages = messages.map(m => {
-      const msg: any = { role: m.role, content: m.content };
+      // 发给模型的 assistant 历史先清洗 XML 残留，防止模型模仿垃圾格式
+      const msg: any = { role: m.role, content: m.role === 'assistant' ? stripToolCallXml(m.content ?? '') : m.content };
       if (m.toolCalls && m.toolCalls.length > 0) {
         msg.tool_calls = m.toolCalls.map(tc => ({
           id: tc.id,
