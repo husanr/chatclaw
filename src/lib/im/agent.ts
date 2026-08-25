@@ -126,8 +126,18 @@ export async function runImAgent(channel: string, userId: string, text: string):
 
     if (result.status === 'complete') {
       // 兜底：模型可能把幻觉的工具调用以 XML 纯文本输出（飞书里无法执行），剔除后再发
-      // 兼容闭合(<invoke>...</invoke>)和未闭合(<invoke ...> 到文本末尾)两种情况
-      const content = (result.content || '').trim().replace(/<invoke[\s\S]*?(?:<\/invoke>|$)/gi, '');
+      // 覆盖 <tool_calls><invoke>...</invoke></tool_calls> 整块、残留 wrapper/parameter 标签（正则用单反斜杠）
+      const before = result.content || '';
+      const content = before
+        .trim()
+        .replace(/<tool_calls>[\s\S]*?<\/tool_calls>|<invoke[\s\S]*?(?:<\/invoke>|$)/gi, '')
+        .replace(/<\/?tool_calls>/gi, '')
+        .replace(/<parameter[^>]*>[\s\S]*?<\/parameter>|<parameter[^>]*>/gi, '')
+        .replace(/<invoke[^>]*>|<\/invoke>/gi, '')
+        .trim();
+      if (content !== (before || '').trim()) {
+        console.log('[feishu] ⚠️ 已剔除回复中的工具调用XML残留');
+      }
       return content.trim() || '✅ 处理完成（没有输出内容）。';
     }
     if (result.status === 'awaiting_input') {
