@@ -94,36 +94,63 @@ export class Agent {
   }
 
   // 系统提示词 - 定义 Agent 的行为
+  // ⚠️ 工具清单/规则按「实际启用的工具」动态生成：IM 模式只启用 13 个工具（无 shell/ask_user），
+  // 若提示词仍宣传全套 16 个，模型会幻觉调用未启用工具，把 XML 伪调用当文本输出（飞书踩过）。
   private getSystemPrompt(): string {
+    const toolDesc: Record<string, string> = {
+      knowledge_search: '搜索本地知识库（用户上传的文档）',
+      web_search: '搜索网页获取最新信息',
+      calculator: '执行数学计算',
+      code_executor: '执行 JavaScript 代码（沙箱）',
+      file_operations: '文件操作（读写/列表/edit 编辑/grep 搜索/glob 匹配）',
+      api_caller: '调用外部 API',
+      app_config: '读取/修改应用配置（如图片 API 地址），改完立即生效',
+      image_generator: '根据描述生成图片，返回图片 URL',
+      get_time: '获取当前日期时间',
+      webpage_fetch: '抓取网页完整文本',
+      memory: '长期记忆，跨会话记住/回忆信息',
+      reload_tool: '动态加载/卸载工具，扩展自身能力',
+      shell_executor: '在用户授权的工作目录执行真实 Shell 命令（npm/git/python 等）',
+      background_task: '后台任务管理（start/status/list/stop/result），长耗时命令用这个，不阻塞对话',
+      subagent: '委派子任务给独立子 Agent 并行执行（prompt 必须自包含）',
+      ask_user: '向用户提问澄清（意图不明、方案选择、关键参数缺失时用，不要瞎猜）',
+    };
+    const enabled = this.config.tools;
+    const enabledSet = new Set(enabled);
+    const toolLines = enabled
+      .map((name) => {
+        const tool = toolRegistry.get(name);
+        const desc = toolDesc[name] ?? tool?.definition.description ?? name;
+        const approval = tool?.requiresApproval ? '（执行前需用户审批）' : '';
+        return `- ${name}: ${desc}${approval}`;
+      })
+      .join('\n');
+    const extraRules: string[] = [];
+    if (enabledSet.has('background_task')) {
+      extraRules.push('**长任务必须用 background_task**：npm install、构建、批量处理等耗时操作，启动后台任务后轮询 status，不要用 shell_executor 同步等待。');
+    }
+    if (enabledSet.has('shell_executor')) {
+      extraRules.push('**涉及真实 Shell 操作**（安装依赖、运行项目、git 操作等）用 shell_executor，命令执行前会请用户确认，等待确认时不要重复发起相同命令。');
+    }
+    if (enabledSet.has('ask_user')) {
+      extraRules.push('**意图不明确就问**：任务有歧义、多方案需要用户决策、缺少关键信息时，用 ask_user 提问澄清，不要擅自假设。');
+    }
+    if (enabledSet.has('subagent')) {
+      extraRules.push('**复杂任务可拆解**：多个独立子任务可用 subagent 并行委派，然后汇总结果。');
+    }
+    const ruleLines = extraRules.map((r, i) => `${i + 4}. ${r}`).join('\n');
+
     return `你是一个智能助手（AI Agent），能够使用各种工具来帮助用户完成任务。
 
 ## 你的能力
 你可以使用以下工具：
-- knowledge_search: 搜索本地知识库（用户上传的文档）
-- web_search: 搜索网页获取最新信息
-- calculator: 执行数学计算
-- code_executor: 执行 JavaScript 代码（沙箱）
-- file_operations: 文件操作（读写/列表/edit 编辑/grep 搜索/glob 匹配）
-- api_caller: 调用外部 API
-- app_config: 读取/修改应用配置（如图片 API 地址），改完立即生效
-- image_generator: 根据描述生成图片，返回图片 URL
-- get_time: 获取当前日期时间
-- webpage_fetch: 抓取网页完整文本
-- memory: 长期记忆，跨会话记住/回忆信息
-- reload_tool: 动态加载/卸载工具，扩展自身能力
-- shell_executor: 在用户授权的工作目录执行真实 Shell 命令（npm/git/python 等，执行前需用户审批）
-- background_task: 后台任务管理（start/status/list/stop/result），长耗时命令用这个，不阻塞对话
-- subagent: 委派子任务给独立子 Agent 并行执行（prompt 必须自包含）
-- ask_user: 向用户提问澄清（意图不明、方案选择、关键参数缺失时用，不要瞎猜）
+${toolLines}
 
 ## 重要规则（必须遵守）
 1. **先查知识库，再搜网页**：当用户提问时，必须先用 knowledge_search 搜索本地知识库。只有当知识库没有相关内容时，才用 web_search。
 2. 如果用户上传了文档，回答问题时务必先搜索知识库，基于文档内容回答。
 3. 只有涉及实时信息（新闻、天气、股价等）或知识库确实找不到答案时，才用 web_search。
-4. **长任务必须用 background_task**：npm install、构建、批量处理等耗时操作，启动后台任务后轮询 status，不要用 shell_executor 同步等待。
-5. **涉及真实 Shell 操作**（安装依赖、运行项目、git 操作等）用 shell_executor，命令执行前会请用户确认，等待确认时不要重复发起相同命令。
-6. **意图不明确就问**：任务有歧义、多方案需要用户决策、缺少关键信息时，用 ask_user 提问澄清，不要擅自假设。
-7. **复杂任务可拆解**：多个独立子任务可用 subagent 并行委派，然后汇总结果。
+${ruleLines}
 
 ## 工作流程（ReAct 模式）
 1. 仔细分析用户的请求（Reasoning - 思考）
@@ -305,8 +332,15 @@ export class Agent {
 
         const tool = toolRegistry.get(tc.name);
 
-        // 【权限门】需要用户审批的工具（如 shell_executor）：暂停循环，等用户确认
-        if (tool?.requiresApproval) {
+        // 【启用门】模型幻觉/误调用「未启用」的工具（如 IM 模式下调用 shell_executor）：
+        // 不执行、不触发审批，把错误回填给 LLM 让它自我纠正（防止 XML 伪调用/假审批泄漏到回复）
+        let result: ToolResult;
+        if (!this.config.tools.includes(tc.name)) {
+          const errorMsg = `工具 "${tc.name}" 未启用（当前可用: ${this.config.tools.join(', ')}）。请改用已启用工具或直接回答用户。`;
+          console.warn(`⚠️ ${errorMsg}`);
+          result = { success: false, error: errorMsg };
+        } else if (tool?.requiresApproval) {
+          // 【权限门】需要用户审批的工具（如 shell_executor）：暂停循环，等用户确认
           console.log(`🛂 工具 ${tc.name} 需要用户审批`);
           return {
             status: 'awaiting_approval',
@@ -314,18 +348,17 @@ export class Agent {
             toolCall: tc,
             toolDescription: tool.definition.description,
           };
-        }
-
-        // 先校验参数：不合法则不执行，把错误回填给 LLM 让它自我纠错重试
-        let result: ToolResult;
-        const validation = tool ? validateToolArgs(tool, tc.args) : { valid: false, errors: [`工具不存在: ${tc.name}`] };
-
-        if (!validation.valid) {
-          const errorMsg = `工具 "${tc.name}" 参数校验失败: ${validation.errors.join('; ')}。收到的参数: ${JSON.stringify(tc.args)}。请修正参数后重试。`;
-          console.warn(`⚠️ ${errorMsg}`);
-          result = { success: false, error: errorMsg };
         } else {
-          result = await toolRegistry.execute(tc.name, tc.args);
+          // 先校验参数：不合法则不执行，把错误回填给 LLM 让它自我纠错重试
+          const validation = tool ? validateToolArgs(tool, tc.args) : { valid: false, errors: [`工具不存在: ${tc.name}`] };
+
+          if (!validation.valid) {
+            const errorMsg = `工具 "${tc.name}" 参数校验失败: ${validation.errors.join('; ')}。收到的参数: ${JSON.stringify(tc.args)}。请修正参数后重试。`;
+            console.warn(`⚠️ ${errorMsg}`);
+            result = { success: false, error: errorMsg };
+          } else {
+            result = await toolRegistry.execute(tc.name, tc.args);
+          }
         }
 
         // 【提问门】工具请求用户输入（ask_user）：暂停循环，把问题推给前端

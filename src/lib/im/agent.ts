@@ -125,8 +125,9 @@ export async function runImAgent(channel: string, userId: string, text: string):
     await saveSession(session);
 
     if (result.status === 'complete') {
-      const content = (result.content || '').trim();
-      return content || '✅ 处理完成（没有输出内容）。';
+      // 兜底：模型可能把幻觉的工具调用以 XML 纯文本输出（飞书里无法执行），剔除后再发
+      const content = (result.content || '').trim().replace(/<invoke[\s\S]*?<\/invoke>/gi, '');
+      return content.trim() || '✅ 处理完成（没有输出内容）。';
     }
     if (result.status === 'awaiting_input') {
       return `🤔 我需要先确认一下：\n${result.question}`;
