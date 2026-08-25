@@ -94,7 +94,7 @@ npm run dev
 
 ## 🤖 IM 机器人接入（飞书 / Telegram）
 
-在**飞书**或 **Telegram** 里直接跟 chatClaw 对话。机器人通过 Webhook 接收消息，后台运行 Agent，处理完通过 IM 开放 API 回复：
+在**飞书**或 **Telegram** 里直接跟 chatClaw 对话。机器人通过飞书**长连接**（WebSocket，无需公网 URL）或 Webhook 接收消息，后台运行 Agent，处理完通过 IM 开放 API 回复（文本 / 交互卡片）：
 
 ```
 用户 → IM 服务器 → POST Webhook → /api/im/feishu（或 /api/im/telegram）
@@ -103,7 +103,7 @@ npm run dev
                             → 调 IM API 把回答发回去
 ```
 
-> **架构要点**：Webhook 立即 200、异步处理——Agent 可能要跑几十秒，同步等待会触发 IM 服务器的重试超时。会话按「渠道+用户」存在服务端（`data/im-sessions.json`），发 `/reset` 可清空上下文。IM 模式启用 13 个无交互工具（shell/后台任务/提问需要审批界面，已排除）。模型凭据从 `IM_AGENT_MODEL` / `IM_AGENT_API_KEY` / `IM_AGENT_BASE_URL` 或模型自身 envKey 读取（无需前端填 Key）。
+> **架构要点**：Webhook 立即 200、异步处理——Agent 可能要跑几十秒，同步等待会触发 IM 服务器的重试超时。会话按「渠道+用户」存在服务端（`data/im-sessions.json`），发 `/reset` 可清空上下文。IM 模式启用 **15 个工具**——`shell_executor` / `background_task` 通过**飞书交互审批卡片**保护（✅批准 / 🚫拒绝按钮，兼文字回复降级），`ask_user` 保持 Web 专用；回复以 **Markdown 卡片**渲染（超长输出降级为分片文本）。模型凭据从 `IM_AGENT_MODEL` / `IM_AGENT_API_KEY` / `IM_AGENT_BASE_URL` 或模型自身 envKey 读取（无需前端填 Key）。
 
 ### 飞书接入步骤（推荐：长连接）
 

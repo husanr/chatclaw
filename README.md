@@ -94,7 +94,7 @@ Visit [http://localhost:3000](http://localhost:3000) 🎉
 
 ## 🤖 IM Bot Integration (Feishu / Telegram)
 
-Chat with chatClaw from **Feishu (Lark)** or **Telegram**. The bot receives messages via webhook, runs the Agent in the background, and replies through the IM API.
+Chat with chatClaw from **Feishu (Lark)** or **Telegram**. The bot receives messages via Feishu **long connection** (WebSocket, no public URL) or webhook, runs the Agent in the background, and replies through the IM API as text / interactive cards.
 
 ```
 User → IM server → POST webhook → /api/im/feishu (or /api/im/telegram)
@@ -103,7 +103,7 @@ User → IM server → POST webhook → /api/im/feishu (or /api/im/telegram)
                               → IM API sends the answer back
 ```
 
-> **Architecture notes**: webhooks respond `200` instantly and process asynchronously — Agent runs can take tens of seconds, which would trip the IM server's retry timeout. Sessions are stored server-side (`data/im-sessions.json`) per channel+user; `send /reset` clears a conversation. IM mode uses the 13 non-interactive tools (shell/background/ask_user need approval UI, so they're excluded); model credentials come from `IM_AGENT_MODEL` / `IM_AGENT_API_KEY` / `IM_AGENT_BASE_URL` or the model's own `envKey`.
+> **Architecture notes**: webhooks respond `200` instantly and process asynchronously — Agent runs can take tens of seconds, which would trip the IM server's retry timeout. Sessions are stored server-side (`data/im-sessions.json`) per channel+user; `send /reset` clears a conversation. IM mode enables **15 tools** — including `shell_executor` & `background_task`, guarded by an **interactive Feishu approval card** (✅ approve / 🚫 reject buttons, plus text-reply fallback); `ask_user` stays Web-only. Replies are rendered as **Markdown cards** (long output falls back to chunked text). Model credentials come from `IM_AGENT_MODEL` / `IM_AGENT_API_KEY` / `IM_AGENT_BASE_URL` or the model's own `envKey`.
 
 ### Feishu setup (recommended: long connection)
 
