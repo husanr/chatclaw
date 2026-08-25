@@ -12,8 +12,9 @@
 // 而不是觉得机器人沉默了。
 // ============================================
 
-import { runImAgent } from './agent';
+import { runImAgent, getPendingApproval, attachApprovalCardMessage } from './agent';
 import { feishuClient } from './feishu';
+import { buildApprovalCard, buildMarkdownCard } from './cards';
 
 // Typing 反应保活间隔（飞书 reaction 约 30 秒过期，25 秒续一次）
 const TYPING_KEEPALIVE_MS = 25_000;
@@ -71,7 +72,29 @@ export async function handleFeishuMessage(
     // 4. 移除 Typing 反应并发送回复
     stopTyping();
     const finalContent = answer.trim();
-    await feishuClient.sendTextChunks(openId, finalContent);
+
+    // 审批请求 → 发「按钮卡片」（可点击批准/拒绝，卡片 message_id 存进 pending 供回调更新）
+    if (!/\n\n⚠️/.test(finalContent) && finalContent.startsWith('🛂 【申请授权 #')) {
+      const pending = await getPendingApproval('feishu', openId);
+      if (pending) {
+        try {
+          const mid = await feishuClient.sendCard(openId, buildApprovalCard(pending));
+          await attachApprovalCardMessage('feishu', openId, mid);
+          console.log(`[feishu] → 已发送审批卡片（${mid.slice(0, 12)}…）`);
+          return;
+        } catch (e) {
+          console.warn('[feishu] 审批卡片发送失败，降级为文本:', e instanceof Error ? e.message : e);
+          // 降级：继续走下方文本发送
+        }
+      }
+    }
+
+    // 普通回复 → Markdown 卡片渲染（中等长度走卡片；超长分片文本兜底）
+    if (finalContent.length <= 9000) {
+      await feishuClient.sendCard(openId, buildMarkdownCard(finalContent || '✅ 处理完成（没有输出内容）。'));
+    } else {
+      await feishuClient.sendTextChunks(openId, finalContent);
+    }
     console.log(`[feishu] → 已回复（${finalContent.length} 字符）`);
   } catch (e) {
     console.error('[feishu] 处理失败:', e);

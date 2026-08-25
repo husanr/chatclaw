@@ -18,6 +18,7 @@
 
 import * as lark from '@larksuiteoapi/node-sdk';
 import { extractFeishuText, handleFeishuMessage } from './feishu-events';
+import { extractCardAction, handleCardAction } from './card-actions';
 
 let started = false;
 
@@ -38,7 +39,7 @@ export function startFeishuLongConnection(): void {
   }
 
   try {
-    // 事件分发器：注册 im.message.receive_v1 处理
+    // 事件分发器：注册消息事件 + 卡片按钮回调事件
     const eventDispatcher = new lark.EventDispatcher({}).register({
       'im.message.receive_v1': (data: any) => {
         const event = data?.event ?? data;
@@ -46,6 +47,12 @@ export function startFeishuLongConnection(): void {
         if (!parsed) return;
         // 异步处理：Agent 可能跑很久，不阻塞 SDK 事件循环
         void handleFeishuMessage(parsed.openId, parsed.text, parsed.chatId, parsed.messageId);
+      },
+      'card.action.trigger': (data: any) => {
+        const event = data?.event ?? data;
+        const card = extractCardAction(event);
+        if (!card) return;
+        void handleCardAction(card.openId, card.requestId, card.decision, card.cardMessageId);
       },
     });
 

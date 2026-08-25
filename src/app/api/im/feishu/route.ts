@@ -35,21 +35,32 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ ok: true });
   }
 
-  // 只处理消息事件
-  if (body.header?.event_type !== 'im.message.receive_v1') {
+  // 只处理消息事件 + 卡片按钮回调事件
+  if (
+    body.header?.event_type !== 'im.message.receive_v1' &&
+    body.header?.event_type !== 'card.action.trigger'
+  ) {
     return NextResponse.json({ ok: true });
   }
 
   const event = body.event ?? {};
 
   // 快速响应 + 后台异步处理（Agent 可能要跑几十秒，不能阻塞 webhook）
-  void handleFeishuEvent(event);
+  void handleFeishuEvent(event, body.header?.event_type);
 
   return NextResponse.json({ ok: true });
 }
 
-/** 从 webhook 事件提取并处理（与长连接共用逻辑） */
-async function handleFeishuEvent(event: any): Promise<void> {
+/** 从 webhook 事件提取并处理（与长连接共用逻辑；eventType 区分消息/卡片回调） */
+async function handleFeishuEvent(event: any, eventType?: string): Promise<void> {
+  if (eventType === 'card.action.trigger') {
+    const { extractCardAction, handleCardAction } = await import('@/lib/im/card-actions');
+    const card = extractCardAction(event);
+    if (card) {
+      await handleCardAction(card.openId, card.requestId, card.decision, card.cardMessageId);
+    }
+    return;
+  }
   const { extractFeishuText } = await import('@/lib/im/feishu-events');
   const parsed = extractFeishuText(event);
   if (!parsed) return;

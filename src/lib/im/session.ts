@@ -21,6 +21,7 @@ export interface ImPendingApproval {
   toolArgs: Record<string, any>;
   toolDescription: string;
   createdAt: number;
+  cardMessageId?: string;  // 审批卡片的 message_id（按钮回调时更新该卡片）
 }
 
 export interface ImSession {

@@ -78,6 +78,63 @@ function buildApprovalPrompt(p: ImPendingApproval): string {
   );
 }
 
+/** 读取当前挂起的审批（飞书层判断是否发按钮卡片用） */
+export async function getPendingApproval(
+  channel: string,
+  userId: string,
+): Promise<ImPendingApproval | null> {
+  const session = await getSession(channel, userId);
+  return session.pending?.kind === 'approval' ? session.pending : null;
+}
+
+/** 记录审批卡片的 message_id（按钮回调时更新该卡片；调用方需已持 withUserLock） */
+export async function attachApprovalCardMessage(
+  channel: string,
+  userId: string,
+  cardMessageId: string,
+): Promise<void> {
+  const session = await getSession(channel, userId);
+  if (session.pending?.kind === 'approval') {
+    session.pending.cardMessageId = cardMessageId;
+    await saveSession(session);
+  }
+}
+
+/**
+ * 处理审批决策（文本回复与卡片按钮共用）。⚠️ 不加锁——由调用方持 withUserLock
+ * （runImAgent 已锁；卡片回调 handleCardAction 自己包锁；嵌套会死锁）。
+ * 返回 consumed=是否真的消费了 pending；text=结果文案；nextPending=恢复后新一轮审批（多级）。
+ */
+export async function resumePendingApproval(
+  channel: string,
+  userId: string,
+  granted: boolean,
+): Promise<{ consumed: boolean; text: string; nextPending: ImPendingApproval | null }> {
+  const session = await getSession(channel, userId);
+  const pending = session.pending;
+  if (pending?.kind !== 'approval') {
+    return { consumed: false, text: '⏳ 当前没有待处理的审批请求。', nextPending: null };
+  }
+  session.pending = null;
+  try {
+    const modelId = process.env.IM_AGENT_MODEL || DEFAULT_MODEL;
+    const { agent } = buildAgent(modelId, session.messages);
+    const result = await withTimeout(agent.resumeWithApproval(granted), MAX_RUN_MS);
+    session.messages = agent.getMessages().slice(-MAX_HISTORY_MESSAGES);
+    const nextPending = toPending(result, null);
+    session.pending = nextPending;
+    await saveSession(session);
+    return { consumed: true, text: formatResult(result), nextPending };
+  } catch (e) {
+    await saveSession(session);
+    return {
+      consumed: true,
+      text: `❌ 审批恢复失败: ${e instanceof Error ? e.message : String(e)}`,
+      nextPending: null,
+    };
+  }
+}
+
 /** 把 awaiting_approval 结果转成持久化 pending 审批 */
 function toPending(result: AgentRunResult, fallback: ImPendingApproval | null): ImPendingApproval | null {
   if (result.status !== 'awaiting_approval' || !result.toolCall) return fallback;
@@ -170,25 +227,14 @@ export async function runImAgent(channel: string, userId: string, text: string):
     const modelId = process.env.IM_AGENT_MODEL || DEFAULT_MODEL;
     const session = await getSession(channel, userId);
 
-    // 🛂 有挂起的审批请求 → 处理用户的批准/拒绝
+    // 🛂 有挂起的审批请求 → 处理用户的批准/拒绝（文本回复；卡片按钮走 handleCardAction）
     if (session.pending?.kind === 'approval') {
       const granted = parseApproval(trimmed);
       if (granted === undefined) {
         return `${buildApprovalPrompt(session.pending)}\n\n⚠️ 未识别到审批指令，请回复「批准」或「拒绝」。`;
       }
-      const pending = session.pending;
-      session.pending = null;
-      try {
-        const { agent } = buildAgent(modelId, session.messages);
-        const result = await withTimeout(agent.resumeWithApproval(granted), MAX_RUN_MS);
-        session.messages = agent.getMessages().slice(-MAX_HISTORY_MESSAGES);
-        session.pending = toPending(result, null);
-        await saveSession(session);
-        return formatResult(result);
-      } catch (e) {
-        await saveSession(session);
-        return `❌ 审批恢复失败: ${e instanceof Error ? e.message : String(e)}`;
-      }
+      const r = await resumePendingApproval(channel, userId, granted);
+      return r.text;
     }
 
     // 正常流程：跑 Agent（含首次触发审批 → 存 pending 并回请求）
